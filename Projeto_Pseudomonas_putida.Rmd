@@ -1,0 +1,4801 @@
+---
+title: "Projeto *Pseudomonas putida*"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+devtools::source_gist("c83e078bf8c81b035e32c3fc0cf04ee8") 
+```
+
+
+# Table of Contents
+
+```{r toc, echo=FALSE} 
+render_toc("Projeto_Pseudomonas_putida.Rmd")
+```
+
+\pagebreak
+# Project
+
+Pseudomonas putida is a bacteria used in biorremediation and plant growth-promoting process. This project aims to characterize for the first time the population structure of pseudomonas putida. This document describes the steps used to get all results from our paper.
+
+The main folder is Pseudomonas_putida, located in winterfell. The subdirectories are:
+- **data**: this directory contais all genomes downloaded from genbank
+
+- **docs**: this directory contais files of readme or warnings abouts some steps in this process
+
+- **results**: this directory contais all subdirectories with each result obtained in this work.
+
+- **src**: this is a source code directory containing all small scripts used to clean or manipulate files.
+
+# Getting Pseudomonas
+
+All data included in this work were downloaded on June 11, 2020. We started downloading all genomes from Pseudomonas genus with the following bash script.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+ncbi-genome-download -g Pseudomonas bacteria -s genbank -v -F fasta -r 999 --parallel 1
+```
+
+We downloaded *11025 genomes*.
+
+## Pseudomonas putida genomes in NCBI
+
+We downloaded the `.csv` file containg all informations about Pseudomonas putida at the same day we downloaded all genomes.
+
+```{r}
+file = '~/Documents/Laboratorio/Pseudomonas_putida/Pseudomonas_information/tabela_NCBI_Junho_2020.csv'
+pput_ncbi <- read.csv2(file, header = T, sep = ",")
+
+head(pput_ncbi)
+```
+
+### Exploratory analysis
+
+```{r, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(plotly)
+```
+
+```{r}
+pput_ncbi<- dplyr::rename(pput_ncbi, Size = Size.Mb., GC = GC., 
+                   Organism = X.Organism.Name, Groups = Organism.Groups)
+```
+
+
+```{r}
+pput_ncbi$Size <- as.numeric(pput_ncbi$Size)
+pput_ncbi$GC <- as.numeric(pput_ncbi$GC)
+```
+
+Number of genomes deposited as Pseudomonas putida:
+
+```{r}
+length(pput_ncbi$Strain)
+```
+
+
+```{r}
+sort(pput_ncbi$Strain)
+```
+
+Is there duplicated names?
+```{r}
+pput_ncbi[duplicated(pput_ncbi$Strain),]$Strain
+```
+
+These two names are repeated.
+
+```{r}
+pput_ncbi %>%
+        ggplot(aes(x = Level)) +
+        geom_bar() +
+        theme_bw()
+```
+
+We can see that *P. putida* has many complete deposited genomes.
+
+```{r}
+#outliers identification
+
+out <- pput_ncbi %>%
+        select(Size, GC, Level, Strain) %>%
+        filter(., GC == min(GC) | Size == min(Size)) %>%
+        mutate(point_label = Strain)
+        
+        
+        
+#Plotting
+pput_ncbi %>%
+        ggplot(aes(x = GC, y = Size, fill = Level, color = Level)) +
+        geom_point(size = 3, alpha = 0.6) +
+        theme_bw() +
+        geom_text(data = out, aes(label = point_label),
+          vjust = "inward", hjust = "inward")
+
+```
+
+This result indicates that that is something weird with some strais such as UWC1.
+
+```{r}
+pput_ncbi %>%
+        ggplot(aes(x = Size)) +
+        geom_density() +
+        theme_bw()
+```
+
+We still can see some outliers based on genome size, but the genome size averages 6 Mb.
+
+# Genome quality filtering
+
+Two main strategy were used here to filter all Pseudomonas genomes: removing contigs with less than 500bp and selecting genomes with completness higher than 90%.
+
+## gt seqfilter
+
+Seq filtering using `gt seqfilter`.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in *.fna.gz
+do
+name=$(basename $i|sed 's/_ASM[[:digit:]]\+[[:alpha:]]\+[[:digit:]]\+_genomic.fna.gz//g')
+gt seqfilter -width 100 -minlength 500 $i >$name\_lt_500.fna;
+rm *.{des,esq,md5,ois,sds,ssp}; #removing intermediate files
+gzip -f $name\_lt_500.fna; #compressing again
+done
+```
+
+## Removing outliers
+
+We also calculated the lengh of each file to exclude those genomes with constrasting sizes based on previous step to remove contigs <500bp. 
+
+warning: this result was used ONLY to construct the mashtree. The genomic quality of Pseudomonas putida was assessed with BUSCO.
+
+```{bash, eval=FALSE, engine="sh"}
+
+#bash
+
+for i in *.fna.gz;do name=$(basename $i); size=$(zcat $i | awk '$0 !~ ">" {c+=length($0);} END { print c; }');echo $name $size >>sizes;done
+```
+
+```{r}
+sizes <- read.table('~/Documents/Laboratorio/Pseudomonas_putida/R_analysis/sizes')
+
+sizes <- sizes  %>%
+        mutate(Size_Mb = V2 / 1e+6)
+        
+sizes %>%
+        ggplot(aes(x=Size_Mb)) +
+        geom_rect(xmin = 4.852524, xmax = 7.829584,
+                  ymin = -Inf, ymax = +Inf, fill = '#ebf2f2') +
+        geom_density() +
+        theme_bw() +
+        geom_vline(xintercept=median(sizes$Size_Mb), #median
+                                     colour = "red", 
+                                     linetype="dashed") +
+        ggtitle("Distribution of genome size of 11025 genomes")
+```
+
+```{r}
+sizes %>%
+        ggplot(aes(x=Size_Mb))+
+        geom_boxplot() +
+        theme_bw()
+```
+
+As a first raw measure, we will remove all outliers from the first analysis.
+
+```{r}
+median(sizes$Size_Mb)
+
+boxplot(sizes$Size_Mb, plot = FALSE)$stats
+```
+
+To remove outliers, we will keep genomes inside the interquartile range and wiskers. Therefore, genomes with size ranging from 4.852524 to 7.829584.
+
+```{r}
+filtered <- filter(sizes, Size_Mb > 4.852524 & Size_Mb < 7.829584)
+
+#Number of genomes to be removed
+dim(sizes)[1] - dim(filtered)[1]
+
+#Number of genomes to proceed
+dim(filtered)[1]
+```
+
+We removed 693 outliers and we keeped 10332 genomes.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+awk '($2 > 4852524) && ($2 < 7829584)' all.genomes.sizes.txt\
+>genomes.filtered.wo.outliers.txt
+```
+
+Selecting those genomes
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in $(cut -d ' ' -f1 ../../docs/genomes.filtered.wo.outliers.txt);\
+do cp ../2.filtered_lt_500/$i .;\
+done
+```
+
+These genomes are located in Pseudomonas_putida/data/3.filtered_outliers.
+
+## Distance tree and network
+
+We first conducted a mashtree analysis to know the phylogenetic tree topology of Pseudomonas genus, but the space complexity was too high to construct the matrix. However, we used the classical mash to generate an adjacence list to conduct our network analysis.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash (ignore)
+mashtree --numcpus 6 *.fasta* > pseudomonas.mashtree.dnd
+```
+
+
+Getting the adjacence list of distances using mash
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+mash triangle -E -p 6 *.fasta.gz >adj_list.txt
+
+```
+
+We can filter this list to remove excess of information using sed
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+gsed 's/GCA_/GCA@/g' adj_list_filtered.txt| \
+gsed 's/_.*.gz[\t]\+G/\tG/g; s/_.*.gz[\t]\+[[:digit:]]/\t0/g'|\
+gsed s/@/_/g'  >adj_list.txt
+```
+
+Since our network will keep only relations bellow 0.05 of distances, we can also filter this before uploading to R.
+
+```{bash, eval=FALSE, engine="sh"}
+awk '$3 < 0.05' adj_list.txt >adj_list_distance_less_0.05.txt
+```
+
+## Network analysis
+
+We estimated the average nucleotide identify from all members in P. putida group (439 genomes)
+
+```{r}
+net_tab <- read.table("R_analysis/ANI/ANIm_from_P_puti_group.tab", header = TRUE)
+```
+
+How is identity to KT2440 (GCA_000007565.2) inside P. putida group?
+
+```{r}
+net_tab %>%
+  dplyr::arrange(desc(GCA_000007565.2)) %>%
+  ggplot2::ggplot(ggplot2::aes(x= c(1:nrow(net_tab)), y=GCA_000007565.2)) +
+  ggplot2::geom_line() +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x="Genomes", y="Identity") +
+  ggplot2::geom_hline(yintercept = 0.95, linetype = "dashed", col = "red", size = 0.3) 
+  
+```
+
+The bounder of Pseudomonas putida, according to our dataset is IOFA19 (GCA_000633915.1) with 0.9561441 previously classified as P. monteilli. 
+
+```{r}
+net_tab %>% dplyr::select(GCA_000007565.2) %>%
+  dplyr::arrange(desc(GCA_000007565.2)) %>%
+  head(n=72)
+```
+
+How is the distribution from type Kh7(GCA_900291035.1)?
+```{r}
+densi <- net_tab %>%
+  dplyr::arrange(desc(GCA_900291035.1)) %>%
+  ggplot2::ggplot(ggplot2::aes(x= c(1:nrow(net_tab)), y=GCA_900291035.1)) +
+  ggplot2::geom_line() +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x="Genomes", y="Identity") +
+  ggplot2::geom_hline(yintercept = 0.95, linetype = "dashed", col = "red", size = 0.3) 
+densi
+```
+
+```{r}
+net_tab %>%
+  dplyr::arrange(desc(GCA_900291035.1)) %>%
+  dplyr::select(GCA_900291035.1)
+```
+
+
+
+Extracting values from inferior diagonal
+
+```{r}
+full_densi <- MCMCpack::vech(net_tab) %>%
+  as.data.frame() %>%
+  ggplot2::ggplot(ggplot2::aes(.)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_light() +
+  ggplot2::labs(x="Identity", y="Density")
+full_densi
+```
+
+```{r}
+cowplot::plot_grid(full_densi, densi, ncol = 2, labels=letters[1:2])
+```
+
+
+
+```{r, message=FALSE}
+net <- igraph::graph_from_adjacency_matrix(as.matrix(net_tab), mode = "undirected", weighted = TRUE, diag = FALSE,
+                            add.colnames = NULL, add.rownames = NA)
+
+```
+
+```{r}
+#Filtrando para os edges serem superiores a 95%
+net_above_0.95= igraph::delete.edges(net, which(igraph::E(net)$weight <0.95))
+
+
+summary(net)
+```
+
+```{r, message=FALSE}
+library(qgraph)
+library(igraph)
+
+e=igraph::get.edgelist(net_above_0.95,names=FALSE)
+
+l=qgraph.layout.fruchtermanreingold(e,vcount=vcount(net_above_0.95),
+                                  area=8*(vcount(net_above_0.95)^2),
+                                  repulse.rad=(vcount(net_above_0.95)^3.1))
+V(net_above_0.95)$label.cex = 0.2
+plot(net_above_0.95,layout=l,vertex.size=3,vertex.label="",
+     edge.color="light gray",edge.width=1)
+```
+
+
+
+# Species Delimitation
+
+We used both mash and ANI to define the dataset that we are interested to work with. I used genomes from 2.filtered_lt_500 folder and assessed the quality with BUSCO
+
+## mash 2.2.2
+
+We used Pseudomonas putida KT2440 (GCA_900167985.1) as a reference to get all genomes with dissimilarity less than 0.05.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+mash dist reference_KT2440.fna.gz\
+../../../data/2.filtered_lt_500/*.fna.gz >mash_dist_list
+```
+
+Filtering
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+awk '$3 < 0.05' mash_dist_list| wc -l
+```
+
+One key observervation is that the same number of strains (**74**)can still be detected until distance of 0.071. In other words, we are getting all genomes that could be Pseudomonas putida using the criteria of distance. The next step in the filtering is to acess the genomic completness with BUSCO
+
+## BUSCO 4.0.6
+
+We need to uncompress files before using busco. Otherwise, it will raise an error based on python and codec.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in ../1.P_putida_from_mash/*; do gunzip $i;done
+```
+
+Running BUSCO with pseudomonadales_odb10 dataset.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in ../1.P_putida_from_mash/*;\
+do echo ''; output=$(basename $i);\
+python3 /home/hemanoel/Local_Softwares/busco/bin/busco \
+--config ~/Local_Softwares/busco/config/myconfig.ini \
+-i $i -c 6 -o $output\-busco \
+-l /home/hemanoel/Local_Softwares/busco/pseudomonadales_odb10 \
+-m genome -f;done \
+2>log.busco #save logs in stdout error
+```
+
+Getting the information about completness:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+grep 'C:' */short* >completeness.log #inside busco folder with results
+```
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+#There are a bunch of regular expressions that can be replaced using sed (this script can be 
+#improved using a more precise regular expression, but it is a simple test).
+
+sed 's/GCA_[[:digit:]]\+.[[:digit:]]_lt_500.fna-busco\/short_summary.specific.pseudomonadales_odb10.//g'\
+completeness.log| sed 's/-busco.txt://g'|\
+sed 's/GCA_[[:digit:]]\+.[[:digit:]]_IMG-taxon_[[:digit:]]\+_annotated_assembly\_genomic.fna.gz_lt_500.fna-busco\/short_summary.specific.pseudomonadales_odb10.//g'\
+|sed 's/GCA_[[:digit:]]\+.[[:digit:]]_[[:digit:]]\+_[[:alpha:]][[:digit:]]\+_genomic.fna.gz_lt_500.fna-busco\/short_summary.specific.pseudomonadales_odb10.//g'\
+| sed 's/GCA_[[:digit:]]\+.[[:digit:]]_Pseudomonas_putida_TRO1_genomic.fna.gz_lt_500.fna-busco\/short_summary.specific.pseudomonadales_odb10.//g'\
+|sed 's/GCA_[[:digit:]]\+.[[:digit:]]_SOAPdenovo_for_version_1.05_of_Pseudomonas_monteilii_genome_genomic.fna.gz_lt_500.fna-busco\/short_summary.specific.pseudomonadales_odb10.//g'\
+|sed 's/:/\t/g'\
+| cut -f1,3|sed 's/%\[S//g' > complet_info_filtered
+```
+
+After ther analysis, we dropped 4 genomes and we have now **70 genomes that passed in our filter**.
+
+### busco for Pseudomonas genera
+
+We are working with 11,025 genomes. I will remove unwanted files to save memory. Before, I need to uncompress each genome and remove it in the final.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for file in ../1.raw_all_genomes/*.gz; do echo processing $file; STEM=$(basename $file .gz); gunzip -c $file > $STEM; busco -i $STEM -l ./pseudomonadales_odb10 -m genome -f -o $STEM\-busco -c 50; mv $STEM\-busco/short_summary.* summary_files/; rm -r $STEM\-busco;rm $STEM;done
+```
+
+
+Getting information of each file
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+grep 'C:' *.txt;grep "C:" *.txt|sed 's/.txt://g; s/C://g; s/\%\[/\t/g'| \
+cut -f1,2 >../busco_completness_info_for_all.txt
+
+```
+
+```{r}
+busco_info <- read.csv2("R_analysis/busco_completness_info_for_all.txt", sep ='\t', header = FALSE)
+busco_info$V2 <- as.numeric(busco_info$V2)
+
+busco_info %>%
+  ggplot(aes(x=V2)) +
+  geom_density() +
+  theme_bw() +
+  xlab("Genome Completness (%)")+
+  ggtitle("11,025 genomes")
+  
+```
+
+We filtered out genomes with completness less than 90%
+```{r}
+busco_info_filtered <- busco_info %>%
+  dplyr::filter(V2>=90)
+
+dim(busco_info_filtered)[1]
+```
+
+10,457 genomas foram mantidos.
+
+
+
+## Manual inspection
+
+There are two genomes submitted twice in NCBI from the same species: KT2440 and S12. We removed from our analysis:
+
+- S12 (GCA_000287915.1) - repeated genome
+- KT2440 (GCA_000007565.2) - another version of classic KT2440 genome
+
+
+```{bash, eval=FALSE, engine="sh"}
+
+#bash
+
+grep -v 'GCA_000287915.1' list.genomes.with.completness.gt.90|\
+grep -v 'GCA_000007565.2' \
+>list.after.all.filtering.txt #saved on 4.Dataset folder
+```
+
+## Final information about dataset
+
+This work is conducted with **68 genomes**. All accessions numbers are in docs/accessions.txt.
+
+## Dataset preparation
+
+The first thing to facilitate our future work is to change the file name from GCA_[0-9] to the name of the strain. Every file has this name in the header os their contigs. We can store this information as follow:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash 
+
+#hint: use sed with multiple patterns with sed 's/p1/sub1/g ; s/p2/sub2/g'
+
+head -1 *|\
+awk 'NF > 0'| \
+sed 's/==> //g'|\
+sed 's/ <==//g'|\
+sed 's/.fasta//g'|\
+sed 's/>[[:alnum:]]\+.[[:digit:]][[:space:]]//g'|\
+sed 's/Pseudomonas putida //g'| sed 's/, complete genome//g'| \
+sed 's/str. //g'|sed 's/, whole genome shotgun sequence//g'|\
+sed 's/ chromosome//g'|sed 's/conitg000839//g'|\
+sed 's/ genome assembly,//g'|sed 's/Pseudomonas sp. //g'|sed 's/strain //g'| \
+sed 's/contig: //g'| \
+sed 's/ scaffold30//g; s/: I//g; s/ERS1018594SCcontig000001//g; \
+s/isolate //g; s/ Contig_63//g; s/: 1//g; s/ NODE_10_length_178161_cov_44.8445_pilon//g; \
+s/ contig_1//g; s/ ODNR4SY_1//g; s/ B2017_chromosome_1//g; s/Pseudomonas monteilii //g; \
+s/ genomic scaffold Scaffold1//g; s/ Contig32//g; s/ seq9_NODE_9//g; \
+s/DNA, Pps03S_CON90119, strain: //g; s/ genomic scaffold EX27DRAFT_scaffold00001.1//g; \
+s/ DNA, [[:alnum:]]\+_[[:alnum:]]\+//g; s/ contig1//g; s/ contig01//g; s/SWI36 //g; \
+s/ NODE_100_length_10356_cov_5.53026_ID_199//g; s/ NODE_100_length_2224_cov_22.762_ID_199//g;\
+s/ NODE1//g; s/Pseudomonas plecoglossicida //g; s/ NODE_[[:digit:]]\+_length_[[:digit:]]\+//g; \
+s/ scaffold[[:digit:]]_cov[[:digit:]]\+//g; s/ BN4_667_1__paired__contig_1//g; s/ NODE_1//g; \
+s/ Contig_10_len_95187//g; s/ NODE_13_LENGTH_1649_COV_747.872070//g; s/ C206_1//g; \
+s/ pRIID_114.contig.0//g; s/NBRC /NBRC_/g; s/ PpAli382_contig_1//g; s/Pseudomonas hunanensis //; \
+s/GTC /GTC_/g; s/\/95 Contig_102/_95/g; s/ Contig_102//g; s/_cov_176.594_ID_19//g; \
+s/ scaffold001//g; s/_cov_43.2102//g; s/ [[:alnum:]]\+_[[:alnum:]]\+//g; \
+s/ scaffold1//g; s/_LENGTH_1649_COV_747.872070//g' >../interleaved_accession_strain.txt
+```
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+awk '$0 !~ "GCA_" ' interleaved_accession_strain.txt >strains_names
+awk '$0 ~ "GCA_" ' interleaved_accession_strain.txt >acc_numbers
+
+#combining these two columns
+
+paste acc_numbers strains_names | column -s $'\t' -t > accession_name.txt
+
+#Changing genomes names
+
+awk 'system("mv " $1"*"" " $2".fasta")' ../accession_strain.txt
+```
+
+## ANI - pyani 0.2.10
+
+We conducted an average nucleotide identity analysis using the average_nucleotide_identity.py from pyani package with genomes with distance less than 0.05 to KT2440.
+
+```{bash, eval=FALSE, engine="sh"}
+average_nucleotide_identity.py -o ANI -i ../4.Dataset/1.genomes/ -m ANIm -v -g
+
+```
+
+We also performed an ANI with Pseudomonas group. The name of genomes from this group was retrieve using iTOL and selecting leaf names from group specified in our paper. The dataset was composed by 439 genomes.
+
+```{bash, eval=FALSE, engine="sh"}
+rename 's/\.1.*/.1.fasta/g' *.fna
+average_nucleotide_identity.py -o ANI_from_pput_group -i ../4.Dataset/3.Genomes_from_Pput_group/ -m ANIm -v -g
+
+```
+
+# Dataset information
+
+```{r}
+pput <- read.table('R_analysis/accession_strain.txt')
+
+colnames(pput) <- c("Accession", "Strain")
+
+head(pput)
+```
+
+We work with the following isoltes:
+
+```{r}
+sort(pput$Strain)
+```
+
+**Warning**: based on name, we have one duplicated name: FW305-E2. One is from Pseduomonas putida and other from Pseudomonas sp. **We assigned GCA_002901725.1 as FW305-E2_1**
+
+```{r}
+information.our.isolates <- dplyr::left_join(pput, pput_ncbi, by = c("Accession" = "Assembly"))
+head(information.our.isolates)
+```
+
+```{r}
+sum(is.na(information.our.isolates$Organism))
+```
+
+We are reclassifying 23 isolates:
+
+```{r}
+information.our.isolates[is.na(information.our.isolates$Organism),]$Strain.x %>%
+        sort()
+```
+
+## complete strain information
+```{r}
+head(information.our.isolates[1:14])
+```
+
+We merged the table information.our.isolates if one prepared to evaluate isolation source, year, location, etc. This new spreadsheet is available online.
+
+```{r}
+r_info <-read.csv2(file = "Pseudomonas_information/raw_information_about_isolation_source.txt",
+          sep = '\t', nrows = 56)
+head(r_info)
+```
+
+```{r}
+raw_info <- left_join(information.our.isolates, r_info, by=c('Strain.x' = 'Strain'))
+```
+
+```{r, eval=FALSE}
+library(writexl)
+write_xlsx(raw_info,"Pseudomonas putida information.xlsx")
+```
+
+The file containg all detailed information about each isolate used in this study is hosted at
+https://docs.google.com/spreadsheets/d/1RLueBxI80v57tJFReIKzVKU1yy_kW1A9HRBRAXV1PU8/edit#gid=1741806770.
+
+We will provide general information of isolates as table 1 from our paper with Strain, Original Classification, Accession, ANI from KT2440, CC
+
+```{r}
+P_putida_info <- read.csv2("R_analysis/Isolates_description/Pseudomonas putida information - Sheet1.tsv", sep = "\t")
+
+#getting ANI information
+net_tab <- read.table("R_analysis/ANI/ANIm_from_P_puti_group.tab", header = TRUE)
+sim_from_KT2440 <- dplyr::select(net_tab, GCA_900167985.1) %>% 
+  dplyr::mutate(Accession = rownames(.))
+
+#CC information
+cc <- read.csv2("R_analysis/Strain_and_cc.txt", sep = "\t", nrows = 68)
+
+
+head(P_putida_info)
+```
+
+```{r}
+table1 <- dplyr::left_join(P_putida_info, sim_from_KT2440, by = "Accession")
+table1 <- dplyr::left_join(table1, cc, by = "Strain")
+table1 <- dplyr::select(table1, Strain, Classified_as = Original_Classification, ANI = GCA_900167985.1, CC, Location = Country, Source, Accession) %>% 
+  dplyr::arrange(desc(ANI))
+
+head(table1)
+```
+
+```{r}
+writexl::write_xlsx(table1, path = "../../Meus_artigos/Pseudomonas putida/table1.xlsx")
+```
+
+getting table 1 from Kh7 (GCA_900291035.1) type strain.
+
+```{r}
+P_putida_info <- read.csv2("R_analysis/Isolates_description/Pseudomonas putida information - Sheet1.tsv", sep = "\t")
+
+#getting ANI information
+net_tab <- read.table("R_analysis/ANI/ANIm_from_P_puti_group.tab", header = TRUE)
+sim_from_kh7 <- dplyr::select(net_tab, GCA_900291035.1) %>% 
+  dplyr::mutate(Accession = rownames(.))
+
+#CC information
+cc <- read.csv2("R_analysis/Strain_and_cc.txt", sep = "\t", nrows = 68)
+
+
+head(P_putida_info)
+```
+
+```{r}
+table1 <- dplyr::left_join(P_putida_info, sim_from_kh7, by = "Accession")
+table1 <- dplyr::left_join(table1, cc, by = "Strain")
+table1 <- dplyr::select(table1, Strain, Classified_as = Original_Classification, ANI = GCA_900291035.1, CC, Location = Country, Source, Accession) %>% 
+  dplyr::arrange(desc(ANI))
+
+head(table1)
+```
+
+```{r}
+writexl::write_xlsx(table1, path = "../../Meus_artigos/Pseudomonas putida/table1_from_K7h.xlsx")
+```
+
+
+
+
+
+
+## excluded strains
+Which strains from NCBI were excluded from our work?
+
+
+```{r}
+#Returning rows from pput_ncbi that does not have matching rows with pput.
+
+excluded <- dplyr::anti_join(pput_ncbi, pput, by=c("Assembly"="Accession"))
+paste("We excluded",dim(excluded)[1], "genomes that are originally deposited as Pseudomonas putida in NCBI.")
+```
+
+```{r}
+sort(excluded$Strain)
+```
+
+```{r}
+length(pput_ncbi$Strain) 
+length(excluded$Strain)
+
+length(excluded$Strain) / length(pput_ncbi$Strain)
+```
+
+This is an important aspect of our paper, because it shows a problem with more 67% of isolates misclassified in NCBI, including some reference genomes such as W619.
+
+We evaluated the distance of all excluded strains from KT2440. We need to do few editions in mash_from_KT2440.txt file to standardize the Accession names:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+gsed 's/GCA_/GCA@@/g' mash_from_KT2440.txt| gsed 's/_/\t/g' |awk '{print $1,$NF}'|gsed 's/@@/_/g;  s/\s/\t/g' >mash_from_KT2440.txt
+```
+
+
+```{r}
+dist.from.KT2440 <- read.table('R_analysis/mash_from_KT2440.txt')
+colnames(dist.from.KT2440) <- c("Accession", "Dist")
+head(dist.from.KT2440)
+```
+
+
+All the strains with similarity with KT2440 higher than 95% were excluded because KT2440 and S12 was duplicated deposited strains and JCM 9802 had a BUSCO completness of 51.2%.
+
+
+However, we will provide the information about excluded strains based on Average Nucleotide Identity from P. putida group.
+
+```{r}
+#Getting ani info from KT2440
+
+sim_from_KT2440 <- dplyr::select(net_tab, GCA_000007565.2) %>% 
+  dplyr::mutate(Accession = rownames(.))
+
+excluded.info <- dplyr::left_join(excluded, sim_from_KT2440, by = c("Assembly" = "Accession")) %>%
+        dplyr::select(Strain, Assembly, Size, GC, GCA_000007565.2) %>%
+        dplyr::arrange(desc(GCA_000007565.2))
+excluded.info <- dplyr::left_join(excluded.info, dist.from.KT2440, by = c("Assembly" = "Accession"))
+
+head(excluded.info) 
+```
+
+Writing for supplementary material
+
+```{r, eval=FALSE}
+writexl::write_xlsx(excluded.info, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/Excluded_strains.xlsx")
+```
+
+# Overview of Pseudomonas putida group
+
+Classified genomes according to our work:
+```{r}
+table_S1 <- readxl::read_excel("../../Meus_artigos/Pseudomonas putida/Tables/Table_S1.xlsx", skip = 2, sheet = 2)
+
+#loading meta information
+
+load(file = "R_analysis/meta_information_pseudomonas.RData")
+```
+
+```{r}
+Table_S1_full <- dplyr::left_join(table_S1, meta_pseudomonas, by=c("Accession Number"="Accession"))
+head(Table_S1_full)
+```
+
+
+The problem with type strain GCA_900277125.1 (P. inefficax)
+
+Our network analysis is placing GCA_900277125.1 at the same cluster as P. asiatica (GCA_009932335.1) and P. shirazica (GCA_900291065.1). P. asiatica and P. shirazica are considered heterotypic synonyms. Let's compare them.
+
+```{r}
+net_tab[c("GCA_900277125.1", "GCA_009932335.1", "GCA_900291065.1"),c("GCA_900277125.1", "GCA_009932335.1", "GCA_900291065.1")]
+```
+
+
+
+# Gene prediction prokka 1.12
+
+Since not all genomes have its predictions available, we performed the gene prediction for all to standardize our study. All results also are located in 4.Dataset folder.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in ../1.genomes/*.fasta; \
+do echo 'next';out=$(basename $i|sed 's/.fasta//g');\
+prokka --outdir $out --force --addgenes --centre XXX --cpus 6 \
+--prefix $out --genus Pseudomonas --species putida --strain $out $i;done
+```
+
+# Plasmid detection
+
+We used the PLSDB_2020_06_29 database to access plasmids.
+
+```{bash, eval=FALSE, engine="sh"}
+
+#bash
+for i in ../../4.Dataset/fna_files/*.fna; do echo processing $i; STEM=$(basename $i .fna);\
+blastn -db ../databases/PLSDB_2020_06_29/plsdb.fna -query $i -outfmt "6 qseqid sseqid pident qlen\
+slen evalue qcovs length qstart qend sstart send bitscore" -max_target_seqs 1 -evalue 1.0e-05\
+-out $STEM\.plasmid;done
+
+for i in *.plasmid; do echo processing $i;STEM=$(basename $i .plasmid); sed -i "s/^/$STEM\t/g" $i;done
+```
+
+This aproached retrieved a lot of false positive sequences. We kept only one hit for each ORF and controled the size of both query and hit to avoid sequences wiht high degree of disparity.
+
+```{r}
+blast_plasmids <- read.csv2("R_analysis/Plasmids/plasmids.plsdb.blast.txt", sep = "\t", header = FALSE)
+colnames(blast_plasmids) <- c('Strain', 'ORF', 'Accession','Identity',
+                              'qlen', 'slen', 'evalue', 'qcov', 'length',
+                              'qstart', 'qend', 'sstart', 'send', 'bitscore')
+
+blast_plasmids$Identity <- as.numeric(blast_plasmids$Identity)
+blast_plasmids$evalue <- as.numeric(blast_plasmids$evalue)
+head(blast_plasmids)
+```
+
+Blast detected the NZ_CP045917.1 sequence integrated in the main chromosome of KT2440, but this sequence needs to be further analysed. We want only one Accession hit per strain.
+
+** Query - Genome Sequences
+** Subject - Plasmid Sequences
+
+```{r, message=FALSE}
+nr_blast_plasmids <- blast_plasmids %>%
+  dplyr::group_by(Strain, ORF, Accession) %>%
+  dplyr::summarise(evalue = min(evalue),
+                   ID = max(Identity),
+                   qlen = max(qlen),
+                   slen = max(slen))
+head(nr_blast_plasmids)
+```
+
+Getting sequences with similar sizes and excluding hits from main chromosome.
+```{r}
+nr_blast_plasmids_filtered <- nr_blast_plasmids %>%
+  dplyr::filter((slen/qlen) >= 0.7) %>%
+  dplyr::filter((qlen/slen) >= 0.7)
+
+nr_blast_plasmids_filtered
+```
+
+Mapping informations about plasmids with files plsdb.tsv and plsdb.abr, provided by the database.
+
+```{r}
+plas_info <- read.csv2("R_analysis/Plasmids/PLSDB_2020_06_29/plsdb.tsv", header = TRUE, sep = "\t")
+```
+
+```{r}
+plasmids_pput <- dplyr::left_join(nr_blast_plasmids_filtered, plas_info, 
+                                  by = c("Accession"="ACC_NUCCORE"))
+
+head(plasmids_pput)
+```
+
+```{r}
+plasmids_pput <- plasmids_pput %>%
+  dplyr::select(Strain, ORF, ID, qlen, slen, Accession, IsolationSource_BIOSAMPLE,taxon_name, plasmidfinder)
+head(plasmids_pput)
+```
+
+
+
+```{r, message=FALSE}
+plasmids_occurrence <- nr_blast_plasmids_filtered %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(Plasmids = length(Accession))
+
+plasmids_occurrence
+```
+
+Exporting all contig names associated with plasmids. Analyses about resistance and virulence composition in plasmids are in Resistance and Virulence sections of this document.
+
+```{r, eval=FALSE}
+write.table(plasmids_pput,"R_analysis/Plasmids/plasmids_pput_filtered.txt", quote = FALSE, col.names = FALSE, na = "NA")
+
+```
+
+With the file plasmids_pput_filtered.txt, I developed a python script to get a tabular file with prediction information from gff file only for contigs that are potentially plasmids. I correlated presence of orfs with hits with virulence and resistance genes. Check these sections.
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+
+#!/usr/local/bin/python3
+
+# ./parse_predictions_from_gff.py --help
+
+import argparse
+
+# List with plasmids ID generated in R.
+
+parser = argparse.ArgumentParser(
+    description="This script parses gff files based on a list of contigs",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
+
+parser.add_argument('-g', '--gff_file',
+                    help="gff file to be parsed", type=str, required=True)
+
+parser.add_argument('-p', '--plasmid_file',
+                    help="file containg the name of contigs", type=str, required=True)
+
+
+args = parser.parse_args()
+
+
+# Parsing plasmids ids:
+plasmids_id = {}  # {'Strain' : ['plasmid_Contig']}
+
+with open(args.plasmid_file, 'r') as fh:
+    while True:
+
+        line = fh.readline().strip().split()
+
+        if len(line) == 0:
+            break
+
+        if line[1] not in plasmids_id:
+            plasmids_id[line[1]] = []
+            plasmids_id[line[1]].append(line[2])
+        else:
+            plasmids_id[line[1]].append(line[2])
+
+
+# Parsing gff file
+gff_info = {}  # {'Contig': {'ORF':['start', 'end']}
+
+with open(args.gff_file, 'r') as fh:
+    while True:
+        hit = fh.readline().strip().split()
+
+        if len(hit) == 0:
+            break
+
+        if hit[0].startswith('gnl'):
+
+            if hit[2] == 'CDS':
+                for i in hit:
+                    if i.startswith('ID='):
+                        temp_id = i.split(';')[0][3:]  # id with ORF name
+            else:
+                continue
+
+            if hit[0] not in gff_info:
+                gff_info[hit[0]] = {}
+
+                if temp_id not in gff_info[hit[0]]:
+                    gff_info[hit[0]][temp_id] = [hit[3], hit[4]]
+            else:
+                if temp_id not in gff_info[hit[0]]:
+                    gff_info[hit[0]][temp_id] = [hit[3], hit[4]]
+
+
+with open(f'{args.gff_file.split(".")[0]}.plasmid_info.txt', 'a') as w:
+    for strain, contigs in plasmids_id.items():
+        if args.gff_file.split(".")[0] == strain:
+            for c in contigs:
+                for orfs in gff_info[c].keys():
+                    w.write(f'{strain}\t{c}\t{orfs}\n')
+
+
+```
+
+Running in bash for all gff files and getting the final tabular file:
+
+```{bash, eval=FALSE, engine="sh"}
+for i in *.gff; do python3 ../../../src/parse_predictions_from_gff.py -g $i\
+-p ../../5.Plasmids/plasmids_pput_filtered.txt; done
+
+
+cat *.plasmid* >plasmids_orf_info.txt
+```
+
+
+
+# Pangenome
+
+## roary 3.13.0
+
+We used roary to get the pangenome boundaries. The minimun threshold for clustering proteins was 85% (-i 85). More over, since we are not working with only reference genomes, the core-genome was characterized as those proteins present in >95% of isolates (-cd 95). We splited paralogs and removed them from the core genome also using roary. If you want the core genome alignmente, you should use -e
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+roary -p 6 -f 7.Roary --mafft -i 85 -cd 95 -r -v 4.Dataset/gff_files/*.gff
+
+```
+
+```{r}
+t<-read.table("R_analysis/Pangenome/Roary_85/gene_presence_absence.Rtab", header = TRUE, check.names = FALSE)
+pan <- t[-1]
+row.names(pan) <- t$Gene
+pan <- t(pan)
+```
+
+```{r}
+dim(pan)
+```
+
+The pangenome size with 85% for clustering is 25 782.
+
+
+```{r}
+colSums(pan) %>%
+  as.data.frame() %>%
+  ggplot2::ggplot(ggplot2::aes(x = .)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+The accessory genome is composed by a high frequency of low-frequency genes. More than 1/3 of detected genes are unique genes, highlighting the high rate of horizontal gene transfer.
+
+
+```{r}
+paste(sum(table(colSums(pan))[65:68]), "core genes") #core isolates >= 95%
+paste(sum(table(colSums(pan))[4:64]), "accessory genes") #accessory 5% <= isolates < 95%
+paste(sum(table(colSums(pan))[1:3]), "unique genes") #unique isolates <5% 
+```
+
+
+```{r}
+3803/25782 #core
+6373/25782 #accessory
+15606/25782 #unique
+```
+
+
+
+What is the number of unique genes per genome?
+
+```{r}
+unique_count <- pan[,colSums(pan)==1] %>%
+  reshape2::melt() %>%
+  dplyr::group_by(Var1) %>%
+  dplyr::summarise(count = sum(value))
+
+unique_count
+```
+
+```{r}
+paste(mean(unique_count$count))
+
+plot(density(unique_count$count))
+```
+
+
+
+```{r}
+heatmap(as.matrix(pan), scale = "none", col=c("#A6CEE3","#1F78B4"), cexRow = 0.3, revC = TRUE)
+```
+
+
+Number of core-genes
+```{r}
+pan[ ,colSums(pan)>=round(nrow(pan) * 0.95)] %>%
+  dim()
+```
+
+The number of core-genes considering an identity of 85% to cluster proteins from 68 genomes is 3803.
+
+```{r}
+str(pan)
+```
+
+```{r}
+cc_info <- read.csv2("R_analysis/Strain_and_cc.txt", sep = '\t', nrows = 68)
+pan_formated <- pan %>%
+  as.data.frame() %>%
+  dplyr::mutate(Strain = rownames(.)) %>%
+  dplyr::left_join(., cc_info, by = "Strain") %>%
+  dplyr::select(-c("ST", "Strain"))
+
+```
+
+*exclusive_preset_genes* - Genes present in all isolates from a given CC and absent from others. 
+*exclusive_absent_genes* - Genes absent in all isolates from a given CC and present in all other CCs.
+
+We could have a problem with exclusively present genes; an overestimation. We need to solve it getting only those genes composing the core of each clonal complex (100% of strains inside a CC). Otherwise, we will consider unique genes and the number of straisn per CC will influence. Because of this, I also created the variable strains_by_cc.
+
+```{r}
+df <- pan_formated %>%
+  dplyr::group_by(CC) %>%
+  dplyr::mutate(strains_by_cc = length(CC)) %>%
+  dplyr::ungroup() %>%
+  tidyr::gather(key=Genes, value, -c(CC, strains_by_cc)) %>%
+  dplyr::group_by(CC, Genes, strains_by_cc) %>%
+  dplyr::summarise(sum = sum(value)) %>%
+  dplyr::mutate(status_pa = ifelse(sum >=1, 1, 0)) %>%
+  dplyr::arrange(status_pa) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(Genes) %>%
+  dplyr::mutate(whole_sum = sum(status_pa)) %>%
+  dplyr::mutate(status = ifelse(whole_sum == 1 & status_pa == 1 & strains_by_cc == sum, 
+                                paste(CC, "exclusive_present", sep = "_"),
+                                ifelse(status_pa == 0 & whole_sum == 7, 
+                                       paste(CC, "exclusive_absent", sep = "_"), "ignore"))) %>%
+  dplyr::arrange(status, Genes)
+  #tidyr::spread(CC, sum) %>% 
+
+head(df)
+```
+
+Number of genes exclusively present or absent per CC. 
+
+```{r}
+df %>%
+  dplyr::group_by(status) %>%
+  dplyr::summarise(count = length(Genes)/length(unique(CC)))#divide by number of clonal complex because the count was for all CCs.
+
+```
+
+Let's consider by now only exclusive absent
+
+Which genes are those exclusive absent in CC1?
+```{r}
+genes_absent_CC1 <- dplyr::filter(df, status == "CC1_exclusive_absent")$Genes
+genes_absent_CC1
+```
+
+```{r}
+gene_pa <- read.csv2("R_analysis/Pangenome/Roary_85/gene_presence_absence.csv", header = TRUE, sep = ",", check.names = FALSE)
+```
+
+```{r}
+df_absence_CC1 <- dplyr::filter(gene_pa, Gene %in% genes_absent_CC1) %>% dplyr::arrange(desc(KT2440)) #lets check these genes present in KT2440 to compare
+writexl::write_xlsx(dplyr::select(df_absence_CC1, c("Gene", "KT2440")), path = "R_analysis/Pangenome/genes_absent_in_CC1_ref_KT2440.xlsx")
+```
+
+
+## pangenome statistics
+
+### fluidity
+
+```{r}
+#whole
+fluidity <- micropan::fluidity(pan, n.sim = 1000)
+```
+
+```{r}
+print(fluidity)
+```
+
+The interpretation of a whole fluidity ($\varphi$) equals to 0.20 +- 0.04 indicates that a pair of P. putida genomes have on average 20% of unique genes and share 80%. The probability that a random gene from a newly sequenced genome is not found in a random sequenced genome is simply ($\varphi$), or 0.2111.
+
+
+### openess
+
+We used the heap law to estimate the pangenome opness $y=x^{\alpha}$.
+
+```{r}
+h.est <- micropan::heaps(pan, n.perm = 500)
+```
+
+```{r}
+print(h.est)
+```
+
+The alfa is 0.4 indicating that P. putida has an open pangenome.
+
+```{r}
+alphas <- replicate(10, micropan::heaps(pan, n.perm = 10)[2])
+alphas
+```
+pegando o ponto de máximo da função
+```{r}
+optimal_value <- optimise(f = approxfun(density(alphas)),
+         interval = c(min(alphas), max(alphas)),
+         maximum = TRUE)$maximum
+optimal_value
+```
+
+
+```{r}
+alphas %>%
+  as.data.frame()%>%
+ggplot2::ggplot(ggplot2::aes(x=.))+
+  ggplot2::geom_density()+
+  ggplot2::geom_vline(xintercept = mean(alphas), color="blue")+
+  ggplot2::geom_vline(xintercept = optimal_value, linetype="dashed", color="red")+
+  ggplot2::labs(title="media em azul. máximo em vermelho")+
+  ggplot2::lims(x=c(0.35, 0.65))+
+  
+  ggplot2::theme_light()
+```
+
+
+
+```{r}
+pan_ac=vegan::specaccum(pan, method = "random", permutations = 100)
+```
+
+Plotting the pangenome opness 
+
+```{r}
+cbind(pan_ac$richness, pan_ac$sd) %>%
+  as.data.frame() %>%
+  dplyr::mutate(lower = V1 - V2) %>%
+  dplyr::mutate(upper = V1 + V2) %>%
+  dplyr::select(Rich = V1, upper, lower) %>%
+  
+  ggplot2::ggplot(ggplot2::aes(x = c(1:68), y = Rich)) +
+  ggplot2::geom_line(size = 0.6, alpha = 1, 
+                     color = RColorBrewer::brewer.pal(n = 12, name = "Paired")[6]) +
+  ggplot2::geom_ribbon(ggplot2::aes(ymin=lower,ymax=upper), alpha=0.3, 
+                       fill = RColorBrewer::brewer.pal(n = 12, name = "Paired")[5]) +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x = "Genomes", y = "Gene Families")
+```
+
+
+## Accessory genome clustering
+
+We conducted an PCoA analysis with accessory genes, considered as those in more than 5% and bellow 95%.
+
+```{r}
+accessory_genome<-pan[ ,colSums(pan)<=round(nrow(pan) * 0.95) & colSums(pan)>=round(nrow(pan) * 0.05)]
+dim(accessory_genome)
+```
+
+Since we are working with binary data, we used Jacccard Distances
+
+```{r}
+pan.dist <- vegan::vegdist(accessory_genome, method = "jaccard", binary = TRUE,
+                    diag = TRUE, upper = TRUE)
+```
+
+```{r}
+str(pan.dist)
+```
+
+Applying MDS to get the PCoA
+
+```{r}
+mds <- cmdscale(pan.dist, eig = TRUE, x.ret=TRUE)
+str(mds)
+
+#Variation per Component
+mds.per.var <- round(mds$eig/sum(mds$eig)*100,1)
+```
+
+
+```{r}
+mds.per.var %>%
+  as.data.frame() %>%
+  ggplot2::ggplot(ggplot2::aes(x = c(1:68), y = .))  +
+  ggplot2::geom_point(alpha = 0.9, color = "red") +
+  ggplot2::geom_line(linetype = "dashed", size = 0.2) +
+  ggplot2::labs(x = "PCoA", y = "Variance explained (%)") +
+  ggplot2::theme_bw()
+```
+
+
+```{r}
+mds_points <- mds$points %>%
+  as.data.frame() %>%
+  dplyr::mutate(Strain = rownames(.))
+```
+
+```{r}
+strains_and_cc = read.csv2("R_analysis/Strain_and_cc.txt", sep = "\t", nrows = 68)
+```
+
+```{r}
+# colors of CCs
+# RColorBrewer::brewer.pal(9, "Set1") #10 colors
+# verde, marrom, laranja, roxo, vermelho, azul, amarelo, cinza
+colors_Set1 <- c("#4DAF4A", "#A65628", "#FF7F00","#984EA3", "#E41A1C", "#377EB8","#FFFF33", "#999999")
+ccs <- c("CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "NOCC")
+ccs_cols <- as.data.frame(cbind(ccs, colors_Set1))
+```
+
+Merging all information
+
+```{r}
+pcoa <- dplyr::left_join(mds_points, strains_and_cc, by = "Strain")
+pcoa <- dplyr::left_join(pcoa, ccs_cols, by = c("CC" = "ccs"))
+pcoa$CC <- as.factor(pcoa$CC)
+pcoa$colors_Set1 <- as.factor(pcoa$colors_Set1)
+head(pcoa)
+```
+
+Analysing the clustering based on accessory genome
+
+```{r}
+pcoa %>%
+  ggplot2::ggplot(ggplot2::aes(x=V1, y=V2)) +
+  ggplot2::geom_point(ggplot2::aes(col = CC, fill = CC), size = 2.5) +
+  ggplot2::stat_ellipse(ggplot2::aes(x=V1, y=V2, fill=CC), geom = "polygon", alpha=0.3) + 
+  ggplot2::scale_fill_manual(values = c("#4DAF4A", "#A65628", "#FF7F00","#984EA3", "#E41A1C", "#377EB8","#FFFF33", "#999999")) +
+  ggplot2::scale_color_manual(values = c("#4DAF4A", "#A65628", "#FF7F00","#984EA3", "#E41A1C", "#377EB8","#FFFF33", "#999999")) +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x = paste("PCoA1 - ", mds.per.var[1], "%", sep=""),
+                y = paste("PCoA2 - ", mds.per.var[2], "%", sep=""))
+```
+
+## DAPC
+
+We want the genes that contributes the most for clustering patterns in P. putida.
+
+```{r, message=FALSE}
+library(adegenet)
+library(ade4)
+```
+
+Reordering the accessory matrix
+
+```{r}
+strains_and_cc$CC <- as.factor(strains_and_cc$CC)
+accessory_genome <- accessory_genome[dplyr::arrange(strains_and_cc)$Strain,]
+  
+```
+
+
+```{r}
+dapc <- dapc(accessory_genome, strains_and_cc$CC)#30 e 3
+```
+
+
+```{r}
+scatter(dapc, bg="white", scree.da=FALSE, scree.pca=TRUE, 
+        posi.pca="bottomleft", clab=0,cex=2, solid = 0.6,
+        legend=TRUE, posi.leg="topleft")
+```
+
+
+### loadings
+
+We will first analyse the contribution of each variable without specifying the axis.
+
+```{r}
+#ploting with axis 2
+sel_1<-loadingplot(dapc$var.contr, threshold = "0.0012",lab.jitter = 1)
+```
+
+```{r}
+#top_50 genes with highest contribution
+sort(sel_1$var.values, decreasing =TRUE)[1:50] %>% as.data.frame() %>% dplyr::arrange(desc(.))
+```
+
+```{r}
+target_50 <- sort(sel_1$var.values, decreasing =TRUE)[1:50] %>% names()
+target_50
+```
+
+
+
+```{r}
+plot(sort(sel_1$var.values, decreasing =TRUE), pch=16, col="lightblue", 
+     ylab="Contribution in variation", xlab="Genes",
+     xlim=c(0,50))
+
+#text(sort(sel$var.values, decreasing =TRUE)[1:10], labels =names(sort(sel$var.values, decreasing =TRUE)[1:10]), pos=4)
+```
+
+
+
+We will try with both top10 and top50
+
+top50
+
+```{r}
+top_50 <- dplyr::filter(gene_pa, Gene %in% target_50) %>%
+  dplyr::select(-c(2:14))
+
+top_50
+```
+
+
+```{r}
+top_50 <- top_50 %>%
+  t() %>%
+  as.data.frame() %>%
+  janitor::row_to_names(row_number = 1)
+head(top_50)
+```
+
+```{r, warning=FALSE}
+for(i in target_50){
+   top_50 <- tidyr::separate(data = top_50, col = i, extra = 'drop', remove = TRUE, into = c(NA, i), sep = '_')
+   top_50[[i]] <- as.integer(top_50[[i]])
+}
+
+```
+
+
+Creating the presence/absence matrix
+```{r}
+top_50[is.na(top_50)] <- 0
+top_50[top_50 > 1 ] <- 1
+head(top_50)
+```
+
+```{r}
+heatmap(as.matrix(top_50), scale = "none", col=c("#A6CEE3","#1F78B4"), cexRow = 0.6)
+```
+
+
+
+Now, we will use the axis 2.
+```{r}
+#ploting with axis 2
+sel<-loadingplot(dapc$var.contr, threshold = "0.0012", axis = 2,
+                 lab.jitter = 1)
+```
+
+```{r}
+#top_50 genes with highest contribution
+sort(sel$var.values, decreasing =TRUE)[1:50] %>% as.data.frame() %>% dplyr::arrange(desc(.))
+```
+
+
+```{r}
+target_50 <- sort(sel$var.values, decreasing =TRUE)[1:50] %>% names()
+target_50
+```
+
+
+
+```{r}
+plot(sort(sel$var.values, decreasing =TRUE), pch=16, col="lightblue", 
+     ylab="Contribution in variation", xlab="Genes",
+     xlim=c(0,50))
+
+#text(sort(sel$var.values, decreasing =TRUE)[1:10], labels =names(sort(sel$var.values, decreasing =TRUE)[1:10]), pos=4)
+```
+
+```{r}
+df <- dapc$pca.loadings %>%
+  as.data.frame()
+```
+
+```{r}
+df %>%
+  head(n = 10)
+```
+
+
+```{r}
+gene_pa <- read.csv2("R_analysis/Pangenome/Roary_85/gene_presence_absence.csv", header = TRUE, sep = ",", check.names = FALSE)
+```
+
+We will try with both top10 and top50
+
+top50
+
+```{r}
+top_50 <- dplyr::filter(gene_pa, Gene %in% target_50) %>%
+  dplyr::select(-c(2:14))
+
+top_50
+```
+
+
+```{r}
+top_50 <- top_50 %>%
+  t() %>%
+  as.data.frame() %>%
+  janitor::row_to_names(row_number = 1)
+head(top_50)
+```
+
+```{r, warning=FALSE}
+for(i in target_50){
+   top_50 <- tidyr::separate(data = top_50, col = i, extra = 'drop', remove = TRUE, into = c(NA, i), sep = '_')
+   top_50[[i]] <- as.integer(top_50[[i]])
+}
+
+```
+
+
+Creating the presence/absence matrix
+```{r}
+top_50[is.na(top_50)] <- 0
+top_50[top_50 > 1 ] <- 1
+head(top_50)
+```
+
+```{r}
+heatmap(as.matrix(top_50), scale = "none", col=c("#A6CEE3","#1F78B4"), cexRow = 0.6)
+```
+
+We can separate CC1 and CC7 from others based on gene presence/absence because of the highest distance in dapc plot. This resolution is still poor for other CCs and may be further improved with more genomes.
+
+
+
+top10:
+
+```{r}
+target <- c("group_11015", "aam_2", "yxeP_2", "group_1251", "pcaK_3","exsA", "group_7706","bacC","group_505","group_13398")
+
+top_10 <- dplyr::filter(gene_pa, Gene %in% target) %>%
+  dplyr::select(-c(2:14))
+
+top_10
+```
+
+```{r}
+top_10 <- top_10 %>%
+  t() %>%
+  as.data.frame() %>%
+  janitor::row_to_names(row_number = 1)
+head(top_10)
+```
+
+
+```{r, warning=FALSE}
+target <- c("group_11015", "aam_2", "yxeP_2", "group_1251", "pcaK_3","exsA", "group_7706","bacC","group_505","group_13398")
+
+
+for(i in target){
+   top_10 <- tidyr::separate(data = top_10, col = i, extra = 'drop', remove = TRUE, into = c(NA, i), sep = '_')
+   top_10[[i]] <- as.integer(top_10[[i]])
+}
+
+```
+
+
+Creating the presence/absence matrix
+```{r}
+top_10[is.na(top_10)] <- 0
+top_10[top_10 > 1 ] <- 1
+head(top_10)
+```
+
+```{r}
+heatmap(as.matrix(top_10), scale = "none", col=c("#A6CEE3","#1F78B4"), cexRow = 0.6)
+```
+
+
+
+# MLST
+
+We downloaded the data on June 20, 2020. The housekeeping genes are: argS, gyrB, ileS, nuoC, ppsA, recA, rpoB, and rpoD. The MLST scheme was composed by 116 different **STs ranging from 1 to 124** (some STs numbers are missing).
+
+Making blast database for housekeeping genes.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in ../../2.Sequences/*.fasta; do echo ''; out=$(basename $i| sed 's/.fasta//g');\
+makeblastdb -dbtype nucl -in $i -out $out -logfile;done
+
+
+```
+
+Running blastn against ffn files.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+for i in ../../4.Dataset/ffn_files/*; do echo $i; \
+out=$(basename $i|sed 's/.ffn/.argS/g'); \
+blastn -db databases/argS -query $i \
+-outfmt "6 qseqid sseqid pident qlen slen evalue qcovs qstart qend sstart send" \
+-max_target_seqs 3 -evalue 1.0e-05 -out results/$out;done
+```
+
+Since this is a critical step, each alignment was evaluated mannualy searching for those with 100% identity with public alelles. This spreadsheet is on google sheets available in
+(https://docs.google.com/spreadsheets/d/1RnwKF7NjdALT83OVwFpAaDpCA3InI7ywQxG9zJb1L5A/edit#gid=0).
+
+STs with very high identity, but not 100% were marked in red. Some strains had more than one copy of the housekeeping gene. The strain NCTC13185 (GCA_901482375.1) missed the recA gene, so we could not assign its ST. We saw a lack of correspondence between our results and those from the group that described the MLST scheme (https://doi.org/10.1038/s41598-019-50299-6). For example, they described the KT2440 as ST 58, but we detected the same combination of alleles that corresponds to ST68 in the published scheme. Moreover, in Figure 2 from their paper, they constructed a phylogenetic tree based on SNPS. Based on this tree and our results, only 10 strains were indeed P. putida, and also this group of strains was monophyletic in their work.
+
+We only retrieved the STs 43, 69, 78, and 87 from those described in published scheme. We updated the STs from this scheme to access the links using eburst software. We assigned numbers ranging from 125 to 163, marked in blue in this spreadsheet.
+
+## STRUCTURE v2.3.4
+
+We used STRUCTURE to access the probable number of clonal complexes based on probability. We used a length of Burnin Period of 50000 and we used 20000 replication after burnin. The simulations ranged from 1 to 20, with randon seeds starting at 4, and 20 iterations.
+
+The configurations are made in mainparams and extraparam files. See one ruuning example bellow:
+
+```{bash, eval=FALSE, engine="sh"}
+
+bin/structure -m path/to/mainparams -e path/to/extraparams 
+path/to/foder/with/input_MLST/project_data
+```
+
+The next step is to determine the number of K Clonal Complexes in this population. Evanno et. al (doi: 10.1111/j.1365-294X.2005.02553.x) evaluated this determination and showed that `log probability of data` ($Pr(X|K)$) parameter does not provide the correct number of clusters. They used a $\Delta K$, an ad hoc quantity related to the second order rate of change of the log probability of data with respect to the number of clusters K.
+
+The posterior probability of the data ($Pr(X|K)$) (`ln P(D)`)is calculated by first computing the log likelihood at each step of MCMC. Then, the mean of these values is calculated and half of variance is substracted from the mean. This will give the `ln P(D)` also referred as `L(K)`. Usually, people assume the number of populations as the K with the highest `L(K)`. However, once the real K is reached, L(K) at larger Ks plateaus. Evanno et. al demonstrated that an ad hoc quantity based on the second order rate of change of the likelihood function with respect to K ($\Delta K$) did show a clear peak at the true value of K.
+
+I created a python script to parse this information and return a table with all K runs to R.
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+#python3
+
+import sys
+import os
+import argparse
+import pandas as pd
+
+
+parser = argparse.ArgumentParser(
+    description="This script parses STRUCTURE output files",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
+
+parser.add_argument('-d', '--directory_run',
+                    help="directory with results from for a given K tested", type=str)
+
+parser.add_argument('-f', '--file_with_best_K',
+                    help="file containg the run associated with the best predicted K", type=str)
+
+parser.add_argument('-t', '--type_of_operation',
+                    help="options: \
+                    k_info --> get table of K and ln P(D) from all iterations;\
+                                    ancestrality_info --> get a table of\
+                                    ancestrality and groups predicted",\
+                                    required=True, type=str)
+
+
+args = parser.parse_args()
+
+
+class Structure:
+
+    def __init__(self, directory):
+        self.directory = directory
+        self.filename = [
+            filename for filename in os.listdir(args.directory_run)]
+
+    # Dictionary to store K and all associated Estimated Ln Prob of Data.
+    def get_k_dict(self):
+
+        k_info = {}
+
+        for filename in self.filename:
+            with open(os.path.join(args.directory_run, filename), 'r') as f:
+                lines = f.readlines()
+
+                for l in lines:
+                    if 'populations assumed' in l:
+                        K = l.rstrip().lstrip().split()[0]
+                    elif l.startswith('Estimated Ln Prob of Data'):
+                        # 30th field to get specifically the number.
+                        value = l.rstrip()[30:]
+                if int(K) not in k_info:
+                    k_info[int(K)] = []
+                    k_info[int(K)].append(float(value))
+                else:
+                    k_info[int(K)].append(float(value))
+
+        return k_info
+
+    # It requires a dictionary from get_k_dict() module.
+    def write_k_info_csv(self, outname='k_info_runs.txt'):
+        df = pd.DataFrame(structure.get_k_dict()).sort_index(axis=1)
+        df.to_csv(outname, sep='\t', index=False)
+
+    def get_ancestrality_dic(self):
+
+        with open(args.file_with_best_K, 'r') as f:
+            lines = f.readlines()
+            ancestry_clusters = []
+
+            # getting the index where this information begins.
+            start_index = lines.index('Inferred ancestry of individuals:\n')
+            end_index = lines.index(
+                'Estimated Allele Frequencies in each cluster\n')
+            # skkiping unecessary lines
+            for l in lines[start_index + 2:end_index - 2]:  
+            
+                ancestry_clusters.append(l.strip().split())
+
+            # Creating the dictionary
+            dictionary = {'Id_number': [], 'Strain': [],
+                          'CC1': [], 'CC2': [], 'CC3': [], \
+                          'CC4': [], 'CC5': [], 'CC6': [], 'CC7': []}
+
+            for i in ancestry_clusters:
+                dictionary['Id_number'].append(i[0])
+                dictionary['Strain'].append(i[1])
+                dictionary['CC1'].append(float(i[4]))
+                dictionary['CC2'].append(float(i[5]))
+                dictionary['CC3'].append(float(i[6]))
+                dictionary['CC4'].append(float(i[7]))
+                dictionary['CC5'].append(float(i[8]))
+                dictionary['CC6'].append(float(i[9]))
+                dictionary['CC7'].append(float(i[10]))
+        return dictionary
+
+    def write_ancestrality_info_csv(self, outname='ancestrality_info_runs.txt'):
+        df = pd.DataFrame(structure.get_ancestrality_dic())
+        df.to_csv(outname, sep='\t', index=False)
+
+
+if __name__ == '__main__':
+    # Writing a table with K-associated posterior probabilities
+    if args.type_of_operation == 'k_info':
+        structure = Structure(args.directory_run)
+        structure.write_k_info_csv('k_runs_info.txt')
+
+    elif args.type_of_operation == 'ancestrality_info':
+        structure = Structure(args.file_with_best_K)
+        # structure.write_ancestrality_info_csv()
+        # write_ancestrality_info_csv()
+        structure.write_ancestrality_info_csv()
+
+```
+
+See the usage:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+python3 parse_STRUCTURE.py -d ../STRUCTURE/param_more_replicates/Results/ -t k_info
+```
+
+Reading the file:
+
+```{r}
+library(tidyr)
+library(reshape2)
+library(naniar)
+k_prob <- read.csv2('STRUCTURE/k_runs_info.txt', sep = '\t')
+
+#converting the probabilities to numeric
+k_prob <- as.data.frame(lapply(k_prob, as.numeric))
+k_prob_melted <- melt(k_prob) %>%
+  replace_with_na(replace = list(value = c(-60607.4,-58006.4)))
+head(k_prob_melted)
+
+```
+
+**warning**:Both K = 13 and K = 17 had a run with an outlier probability (`Ln P(D)` of -60607.4 and -58006.4, respectively). In these cases, I removed the outliers to calculate mean and sd.
+
+
+
+The first step to get the best K number is to evaluate the mean of each iteration --> L(K):
+```{r}
+LK <- k_prob_melted %>%
+  group_by(variable) %>%
+  summarise(mean = mean(value,na.rm = TRUE),
+            lower = mean(value,na.rm = TRUE) - sd(value,na.rm = TRUE),
+            upper = mean(value,na.rm = TRUE) + sd(value,na.rm = TRUE),
+            std = sd(value, na.rm = TRUE))
+head(LK)
+  
+```
+
+**Step 1** Plot with confidence intervals of ${\pm}$ standard deviations. 
+
+```{r}
+LK %>%
+  ggplot(aes(x = c(1:20), y = mean)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_pointrange(aes(ymin = lower, ymax = upper)) +
+  theme_bw() +
+  xlab('K') +
+  ylab('L (K)')
+
+```
+
+**Step 2 ** Rate of change of the likelihood distribution (${mean \pm SD}$) calculated as L'(K) = L(K) – L(K – 1).
+
+```{r}
+k_prob[14,"X13"] <- NA #outlier from K = 13
+k_prob[11,"X17"] <- NA #outlier from K = 17
+
+first_derivate <- k_prob %>%
+  transmute(X2_X1 = X2 - X1,
+            X3_X2 = X3 - X2,
+            X4_X3 = X4 - X3,
+            X5_X4 = X5 - X4, 
+            X6_X5 = X6 - X5,
+            X7_X6 = X7 - X6,
+            X8_X7 = X8 - X7,
+            X9_X8 = X9 - X8,
+            X10_X9 = X10 - X9,
+            X11_X10 = X11 - X10,
+            X12_X11 = X12 - X11,
+            X13_X12 = X13 - X12,
+            X14_X13 = X14 - X13,
+            X15_X14 = X15 - X14,
+            X16_X15 = X16 - X15,
+            X17_X16 = X17- X16,
+            X18_X17 = X18 - X17,
+            X19_X18 = X19 - X18,
+            X20_X19 = X20 - X19) %>%
+  melt() %>%
+  group_by(variable) %>%
+  summarise(mean = mean(value,na.rm = TRUE),
+            lower = mean(value,na.rm = TRUE) - sd(value,na.rm = TRUE),
+            upper = mean(value,na.rm = TRUE) + sd(value,na.rm = TRUE))
+
+head(first_derivate)
+  
+  
+```
+
+Ploting:
+
+```{r}
+first_derivate %>%
+  ggplot(aes(x = c(2:20), y = mean)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_pointrange(aes(ymin = lower, ymax = upper)) +
+  theme_bw() +
+  xlab('K') +
+  ylab("L' (K)")
+```
+
+
+**Step 3** Absolute values of the second order rate of change of the likelihood distribution (${mean \pm SD}$) calculated according to the formula: `|L''(K)| = |L'(K + 1) – L'(K)|`.
+
+```{r}
+second_derivate <- k_prob %>%
+  transmute(X2_X1 = X2 - X1,
+            X3_X2 = X3 - X2,
+            X4_X3 = X4 - X3,
+            X5_X4 = X5 - X4, 
+            X6_X5 = X6 - X5,
+            X7_X6 = X7 - X6,
+            X8_X7 = X8 - X7,
+            X9_X8 = X9 - X8,
+            X10_X9 = X10 - X9,
+            X11_X10 = X11 - X10,
+            X12_X11 = X12 - X11,
+            X13_X12 = X13 - X12,
+            X14_X13 = X14 - X13,
+            X15_X14 = X15 - X14,
+            X16_X15 = X16 - X15,
+            X17_X16 = X17- X16,
+            X18_X17 = X18 - X17,
+            X19_X18 = X19 - X18,
+            X20_X19 = X20 - X19) %>%
+  
+  #Second derivate L''(K) = abs(L'(K) + 1 - L'(K))
+  transmute(L2 = abs(X3_X2 - X2_X1),
+            L3 = abs(X4_X3 - X3_X2),
+            L4 = abs(X5_X4 - X4_X3),
+            L5 = abs(X6_X5 - X5_X4),
+            L6 = abs(X7_X6 - X6_X5),
+            L7 = abs(X8_X7 - X7_X6),
+            L8 = abs(X9_X8 - X8_X7),
+            L9 = abs(X10_X9 - X9_X8),
+            L10 = abs(X11_X10 - X10_X9),
+            L11 = abs(X12_X11 - X11_X10),
+            L12 = abs(X13_X12 - X12_X11),
+            L13 = abs(X14_X13 - X13_X12),
+            L14 = abs(X15_X14 - X14_X13),
+            L15 = abs(X16_X15 - X15_X14),
+            L16 = abs(X17_X16 - X16_X15),
+            L17 = abs(X18_X17 - X17_X16),
+            L18 = abs(X19_X18 - X18_X17),
+            L19 = abs(X20_X19 - X19_X18)
+            ) %>%
+  melt() %>%
+  group_by(variable) %>%
+  summarise(mean = mean(value,na.rm = TRUE),
+            lower = mean(value,na.rm = TRUE) - sd(value,na.rm = TRUE),
+            upper = mean(value,na.rm = TRUE) + sd(value,na.rm = TRUE))
+
+second_derivate
+  
+```
+
+```{r}
+second_derivate %>%
+  ggplot(aes(x = c(2:19), y = mean)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_pointrange(aes(ymin = lower, ymax = upper)) +
+  theme_bw() +
+  xlab('K') +
+  ylab("L'' (K)")
+```
+
+**Step 4 ** $\Delta K$ calculated as $\Delta K$ = m|L''(K)| / s[L(K)].
+
+```{r}
+#During the derivation, we lose K = 1 and K = 20
+
+delta <- as.data.frame(cbind(second_derivate$mean, LK$std[2:19]))
+colnames(delta) <- c('abs_sec_derivate_mean', 'std_LK')
+
+delta <- mutate(delta, delta = abs_sec_derivate_mean / std_LK,
+                K = 2:19)
+
+delta
+```
+
+Plotting delta
+
+```{r}
+delta %>%
+  ggplot(aes(x = K, y = delta)) +
+  geom_point(size = 2) +
+  geom_line() +
+  scale_x_continuous(breaks = c(3,5,7,9,11,13,15,17, 19)) +
+  theme_bw() +
+  xlab('K') +
+  ylab(expression(Delta*"K"))
+  
+```
+
+These results indicate that the best K is 7 (acording to this MLST scheme), indicating that the population structure of Peseudomonas putida is composed by at leat 7 clonal complexes. We used the run_125 to proceed our analysis, since the results had a low standard deviation.
+
+We explored the population structure predicted by STRUCTURE compared to that from cgMLST using iTOL v4 (https://doi.org/10.1093/nar/gkz239). We also checked from Fst and Heterorigozity among clusters predicted.
+
+
+-Average distances (expected heterozygosity) between individuals in same cluster:
+
+cluster  CC5  : 0.3787
+
+cluster  CC6  : 0.5880
+
+cluster  CC7  : 0.0199 
+
+cluster  CC4  : 0.4983 
+
+cluster  CC2  : 0.3009 
+
+cluster  CC1  : 0.1718 
+
+cluster  CC3  : 0.8144 
+
+
+Estimated Ln Prob of Data   = -486.1
+
+Mean value of ln likelihood = -397.0
+
+Variance of ln likelihood   = 178.1
+
+Mean value of alpha         = 0.0280
+
+
+The fixation index can range from 0 to 1, where 0 means complete sharing of genetic
+material and 1 means no sharing.
+
+Mean value of Fst_1  (CC5)       = 0.6100
+
+Mean value of Fst_2  (CC6)      = 0.3589
+
+Mean value of Fst_3  (CC7)      = 0.9196
+
+Mean value of Fst_4  (CC4)     = 0.3348
+
+Mean value of Fst_5  (CC2)      = 0.6516
+
+Mean value of Fst_6  (CC1)      = 0.8046
+
+Mean value of Fst_7  (CC3)      = 0.0287
+
+
+
+# Phylogenetic Analysis
+
+## Core-genes dataset
+
+We separated the core-genome to analyse proportion of SNPs and to reconstruct the phylogenetic tree. First, we used the output from roary (clustered_proteins) to create a folder containing all files corresponding to the core-genome with sequences with a modified header for the name of the strain. I built a python script for this. If you want to run it, just type `extract_core.py --help` to see parameters and usage.
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+
+#python3 - extract_core.py
+
+#!/usr/local/bin/python3
+
+''' Script to extract sequences from core genome determined by roary and the protein clustered file
+from CD-HIT'''
+
+from Bio import SeqIO
+import argparse
+import os
+
+
+parser = argparse.ArgumentParser(
+    description="This script uses the clustered_proteins output from roary to extract the core\
+    genome.",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
+
+# Adding arguments
+parser.add_argument('-c', '--clusters',
+                    help="input clustered proteins file.", required=True)
+parser.add_argument('-n', '--strains',
+                    help="Number of strains analysed in the study", type=int, required=True)
+parser.add_argument('-d', '--directory',
+                    help="Name of the directory containing the ffn files", required=True, type=str)
+parser.add_argument('-o', '--output',
+                    help="Name of the directory containing the output files", required=True, type=str)
+
+
+args = parser.parse_args()  # Storing arguments in args variable.
+
+
+class Cluster:
+
+    def __init__(self, filename):
+        self.filename = filename
+        pass
+
+    def readClusters(self):
+        names = []
+        ORFS = []
+
+        with open(self.filename, 'r') as file:
+            while True:
+                hits = file.readline().rstrip().split()
+                # Final of the file.
+                if len(hits) == 0:
+                    break
+                # [:-1] to remove : in the end of orf name.
+                names.append(hits[0][:-1])
+                ORFS.append(hits[1:])
+        return dict(zip(names, ORFS))
+
+    def get_core_unique(self, dictionary):
+        # filtering the keys with exact number of strains used in the analysis.
+        # key_value[1] refers to the values in the .items() module.
+        # The common way to remove duplicates is to convert the lists in sets. 
+        #The block is doing all at the same time.
+
+        # Removing duplicates
+        # unique sequences can be obtained based on prokka id (MHLJKLJO_02609).
+        # if there is a repetition of prefix of 8 letters, there are two proteins 
+        #from the same genome.
+
+        dict_no_repeats = {}
+
+        for k, v in dictionary.items():
+            prefix = []
+            for i in v:
+                prefix.append(i[:8])
+
+            if len(prefix) == len(set(prefix)):  # discarding key with prefix repetitions
+                dict_no_repeats[k] = v
+
+        # Getting the core
+
+        core = filter(lambda key_value: len(
+            key_value[1]) == args.strains, dict_no_repeats.items())
+
+        return dict(core)
+
+
+if __name__ == '__main__':
+    # Generating a dictionary with the cluster name and all orfs associated with it.
+    # The file used in the argument --input is stored at args.inpuy
+
+    # Creating the object
+    clusters = Cluster(args.clusters)
+    dictio = clusters.readClusters()
+    # It is a dictionary with core genes.
+    core = clusters.get_core_unique(dictio)
+    print('Clusters do core-genoma lidos com sucesso.')
+
+    # Output folder
+
+    os.mkdir(args.output)
+
+    # Reading fasta files to get core sequences:
+    for k, v in core.items():
+        dict_temp = {}
+        for filename in os.listdir(args.directory):
+            with open(os.path.join(args.directory, filename), 'r') as f:
+                for record in SeqIO.parse(f, 'fasta'):
+                    if record.id in v:
+                        # split to get the name of the strain and the sequence associated.
+                        dict_temp[os.path.splitext(filename)[0].split(
+                            '/')[-1]] = record.seq
+        for strain, seqs in dict_temp.items():
+            with open(f'{args.output}/{k}.fasta', 'a') as f:  # appending mode
+                f.write(f'>{strain}\n{seqs}\n')
+```
+
+The core genome is composed by `2844` gene groups single-copy.
+
+
+## Filtering PREQUAL v.1.02
+
+I used PREQUAL to evaluate the quality of sequences. Studies suggested that it increases a lot the quality and sensitivity of phylogenetic analysis (https://doi.org/10.1186/s12862-019-1350-2).
+
+## MAFFT v7.467
+
+The alignment of each core gene was conducted with mafft.
+
+```{bash, eval=FALSE, engine="sh"}
+for i in Core_data/*.fasta; do echo ' ';out=$(basename $i); mafft $i >mafft/$out;done
+```
+
+## snp-sites 2.3.3
+
+The extracted the snps from each alignment using snp-sites generating both fasta and vcf files.
+
+```{bash, eval=FALSE, engine="sh"}
+for i in mafft/*.fasta; do echo '';out=$(basename $i|sed 's/.fasta//g'); snp-sites -mvc -o SNPs/$out $i;done
+```
+
+Only `2837 genes` from `2844 genes` identified in the core genome had at least one SNP. There were **225009 SNPS across the core-genome.**
+
+
+## concatenating snps
+
+We used the Software FASconCAT v1.04 with `-l` option to delimitate the position of each gene in the alignment. 
+
+FASconCAT-G_v1.02.pl -l -s
+
+You can check the outputed files:
+
+-SEQUENCE Concatenation Process:
+
+Concatenated Supermatrix FILE Printed As FcC_supermatrix.fas
+
+`mv FcC_supermatrix.fas snp_aln.fas`
+
+-Partition File Print OUT: 
+
+RAxML Partition File Printed As FcC_supermatrix_partition.txt
+
+`mv FcC_supermatrix_partition.txt aln_partition.txt`
+
+-FILE INFO Print OUT:
+
+Extensive SEQUENCE Info Of Supermatrix Printed To FcC_info.xls
+Extensive SEQUENCE Info Of INFILES Printed To FcC_info.xls
+
+### counting SNPs per gene
+
+I created a python3 code named as count_snps_from_fasta.py
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+#python3
+
+#!/home/hemanoel/miniconda3/bin/python3
+
+'Description: count_snops_from_fasta.py file.fasta >>output.txt'
+
+import sys
+
+file = sys.argv[1]
+
+with open(file, 'r') as fh:
+        fh.readline()
+        seq = fh.readline().rstrip()
+
+out = file.split('.')
+
+print(f'{out[0]}\t{len(seq)}')
+```
+
+We can use this code to iterate combined with shell:
+
+```{bash, eval=FALSE, engine="sh"}
+
+for i in *.fas; do python3 count_snps_from_fasta.py $i >>\
+../number_of_snps_by_gene.txt;done
+```
+
+The next step was to map these genes in KT2440 positions based on gff3 files. To remove the fasta sequence from gff3 file, we can locate the line number that it starts and use only things above.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+egrep -n -m 1 '##FASTA' KT2440.gff #line 11397
+
+#Using the line number - 1. --> 11397 -1
+
+head -11396 >gff_KT2440_ref.txt
+
+```
+
+Filtering the position of core genes in KT2440 based on clusters:
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+#python
+
+#!/usr/local/bin/python3
+
+import sys
+import re
+
+clusters = sys.argv[1]
+strains = int(sys.argv[2])
+
+
+class Cluster:
+
+    def __init__(self, filename):
+        self.filename = filename
+        pass
+
+    def readClusters(self):
+        names = []
+        ORFS = []
+
+        with open(self.filename, 'r') as file:
+            while True:
+                hits = file.readline().rstrip().split()
+                # Final of the file.
+                if len(hits) == 0:
+                    break
+                # [:-1] to remove : in the end of orf name.
+                names.append(hits[0][:-1])
+                ORFS.append(hits[1:])
+        return dict(zip(names, ORFS))
+
+    def get_core_unique(self, dictionary):
+        # filtering the keys with exact number of strains used in the analysis.
+        # key_value[1] refers to the values in the .items() module.
+        # The common way to remove duplicates is to convert the lists in sets. The block is doing all at the same time.
+
+        # Removing duplicates
+        # unique sequences can be obtained based on prokka id (MHLJKLJO_02609).
+        # if there is a repetition of prefix of 8 letters, there are two proteins from the same genome.
+
+        dict_no_repeats = {}
+
+        for k, v in dictionary.items():
+            prefix = []
+            for i in v:
+                prefix.append(i[:8])
+
+            if len(prefix) == len(set(prefix)):  # discarding key with prefix repetitions
+                dict_no_repeats[k] = v
+
+        # Getting the core
+
+        core = filter(lambda key_value: len(
+            key_value[1]) == strains, dict_no_repeats.items())
+
+        return dict(core)
+
+
+if __name__ == '__main__':
+    # Generating a dictionary with the cluster name and all orfs associated with it.
+    # The file used in the argument --input is stored at args.input.
+
+    # Creating the object
+    clusters = Cluster(clusters)
+    dictio = clusters.readClusters()
+    # It is a dictionary with core genes.
+    core = clusters.get_core_unique(dictio)
+
+    # Filtering hits from KT2440
+
+    pat = r'(JPCJOKPO_\d{5})'
+    KT2440 = []
+    group_name = []
+
+    for k, v in core.items():
+        KT2440.append(re.search(pat, ''.join(v))[1])
+        group_name.append(k)
+
+    group_orf = dict(zip(group_name, KT2440))
+
+    for k, v in group_orf.items():
+        print(f'{k}\t{v}')
+```
+
+Now, we can save this using bash.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+./mapping_snps_to_KT2440.py clustered_proteins 68 >group_ORF_id_from_KT2440
+```
+
+We can use R to merge tables and get the final table with positions
+
+```{r}
+#All orfs from KT2440 that were present in the core genome.
+
+core_orf_id_KT2440 <- read.table('R_analysis/group_ORF_id_from_KT2440')
+
+colnames(core_orf_id_KT2440) <- c('clusters', 'ORF')
+head(core_orf_id_KT2440)
+```
+
+In the gff file, ORFS are stored in the Prodigal:2.6 field. We need to filter and better adjust the gff file befor importing.
+
+
+```{bash, eval=FALSE, engine="sh"}
+grep Prodigal:2.6 gff_KT2440.txt |cut -f 4,5,7,8,9|\
+gsed 's/;/\t/g'|cut -f1,2,3,4,5|sed 's/ID=//g' >KT2440_gff_filtered
+```
+
+```{r}
+gff_KT2440 <- read.delim("~/Documents/Laboratorio/Pseudomonas_putida/R_analysis/KT2440_gff_filtered", header=FALSE, comment.char="#")
+
+colnames(gff_KT2440) <- c('start', 'end', 'strand', 'phase', 'ORF')
+head(gff_KT2440)
+```
+
+
+
+```{r}
+info_len <- left_join(core_orf_id_KT2440, gff_KT2440, by = 'ORF')
+head(info_len)
+```
+
+Now, we can merge with SNP length information filtering only those genes that presented SNPS (2837)
+
+```{r}
+snps_sizes <- read.table('R_analysis/number_of_snps_by_gene.txt')
+colnames(snps_sizes) <- c('clusters', 'snps')
+
+head(snps_sizes)
+```
+
+```{r}
+snps <- left_join(snps_sizes, info_len, by = 'clusters')
+
+head(snps)
+```
+
+```{r}
+library(magrittr)
+library(dplyr)
+
+snps <- snps %>%
+  arrange(start)
+
+head(snps)
+  
+```
+
+```{r}
+library(ggplot2)
+
+snps %>%
+  ggplot(aes(x = ORF, y = snps, group = 1)) +
+  geom_line() +
+  xlab('')
+```
+
+Gráfico interativo para analisar o gráfico.
+
+
+```{r, eval=FALSE,}
+library(plotly)
+
+snps %>%
+  plot_ly(x = ~ORF, y = ~ snps) %>%
+  add_lines() %>%
+  rangeslider()
+```
+
+
+## ChromoPainter and fineSTRUCTURE v4.1.1
+
+FineSTRUCTURE is software to perform population assignment using large numbers of densely sampled genomes. Similar in concept to STRUCTURE,`fineSTRUCTURE` assigns individuals to populations using a model for the expected variability. The advantage of this approach is that very large numbers of SNPs can be used and *linkage disequilibrium* can be eficiently exploited. To achieve this the computation is split into a *painting step* and a *population inference step*.
+
+There three main scripts:
+
+`ChromoPainter`: Take the phased data and "paint" each haplotype;
+
+`ChromoCombine`: Uses the output from ChromoPainter and generates the main file:**coancestry matrix**.
+
+`FineSTRUCTURE`: Uses the coancestry matrix to identify indistinguishable individuals and cluster them.
+
+
+For computational consideration, the cost when we run in parallel is N*L (N = 68 strains and L = 225009 SNPs).
+
+
+Get started by running the GUI with:
+"finegui -c example_linked.chunkcounts.out -m example_linked_mcmc.xml -t example_linked_tree.xml -m2 example/stage3/example_linked_mcmc_run1.xml -t2 example/stage4/example_linked_tree_run1.xml"
+Then click "File->Open", then "Read Data File", "Read Pairwise Coincidence" and "Read Tree". Then you can explore the results.
+Check convergence results by click "File->Manage Second Dataset", then "Read Data File", "Read Pairwise Coincidence" and "Read Tree". Then close the window and "View->Pairwise Coincidence", then "Second view->Enable Alternative Diagonal View" and "Second view->Use second dataset", then finally "Second view->Pairwise Coincidence". The top right diagonal shows the second MCMC run.
+
+
+## RAxML
+
+### SNPs tree
+
+When we use a SNPs alignment as an input, we need to specify the mode ASC.
+
+```{bash, eval=FALSE, engine="sh"}
+raxmlHPC-PTHREADS-AVX -n pput_snps_core -f a \
+-x 12345 -# 1000 -m ASC_GTRGAMMA --asc-corr=lewis -T 5 -p 123456\
+-s ../../Pseudomonas_putida/results/8.Phylogeny/1.Alinhamentos/concatenated_snps/snp_aln.fas
+```
+
+The file that we used to plot the tree was the RAxML_bipartitions.pput_snps_core, that contains all *bootstrap* values.
+
+### Tree visualization
+
+We used treeio and ggtree to visualize and anotate trees. Check (https://yulab-smu.github.io/treedata-book/chapter2.html) for a great tutorial.
+
+```{r, eval=FALSE, message=FALSE}
+#Installing treeio with Bioconductor
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("treeio")
+BiocManager::install("ggtree")
+```
+
+
+```{r, message=FALSE}
+raxml <- treeio::read.raxml("Phylogenies/RAxML/RAxML_bipartitionsBranchLabels.pput_snps_core")
+raxml <- treeio::as.phylo(raxml)
+class(raxml)
+```
+
+```{r, message=FALSE}
+outgroup <- c("LF54", "DZ-F23", "IOFA1", "IOFA19", "CY06", "KH-20-11",
+              "KH-18-2", "KB3", "KT-90")
+
+tree <- treeio::root(raxml, outgroup)
+```
+
+The ggtree extends ggplot2 to support tree objects by implementing a geometric layer, geom_tree, to support visualizing tree structure. In ggtree, viewing a phylogenetic tree is relatively easy, via the command `ggplot(tree_object)` + `geom_tree()` + `theme_tree()` or `ggtree(tree_object)` for short. Layers of annotations can be added one by one via the + operator.
+
+```{r}
+ggtree::ggtree(tree, branch.length="none", layout = "circular") +
+  ggtree::geom_rootedge(rootedge = 0.7) #0.7 is the length of root edge.
+```
+
+Getting Clonal Complex info and grouping the tree.
+
+```{r}
+cc_info <- read.csv2("R_analysis/Strain_and_cc.txt", sep = '\t', nrows = 68)
+head(cc_info)
+```
+
+```{r}
+df_tree <- treeio::as_tibble(tree)
+head(df_tree)
+```
+
+Grouping OTUs:
+
+```{r}
+cls <- list(CC1=dplyr::filter(cc_info, CC == "CC1")$Strain,
+            CC2=dplyr::filter(cc_info, CC == "CC2")$Strain,
+            CC3=dplyr::filter(cc_info, CC == "CC3")$Strain,
+            CC4=dplyr::filter(cc_info, CC == "CC4")$Strain,
+            CC5=dplyr::filter(cc_info, CC == "CC5")$Strain,
+            CC6=dplyr::filter(cc_info, CC == "CC6")$Strain,
+            CC7=dplyr::filter(cc_info, CC == "CC7")$Strain,
+            NOCC=dplyr::filter(cc_info, CC == "NOCC")$Strain)
+
+
+tree_df_grouped <-treeio::as_tibble(tree) %>% ggtree::groupOTU(cls)
+head(tree_df_grouped)
+```
+
+```{r, message=FALSE}
+tree_grouped <- treeio::as.phylo(tree_df_grouped)
+```
+
+
+
+```{r}
+#Just to see how it works. 0 is the outgroup
+ggtree::ggtree(tree_grouped, ggtree::aes(color=tree_df_grouped$group)) +
+  ggtree::geom_rootedge(rootedge = 0.01)
+```
+
+Vizualizing bootstrap tree:
+
+```{r}
+btrees <- treeio::read.tree("Phylogenies/RAxML/RAxML_bootstrap.pput_snps_core")
+```
+
+```{r}
+b200<- btrees[1:200]
+```
+
+```{r}
+ggtree::ggdensitree(b200, alpha=.3, colour='steelblue') +
+  ggtree::geom_tiplab(size=3) + ggtree::xlim(0, 45)
+```
+
+We can see from this bootstrap density tree that Clonal Complex 7, with the highest heterozigozity is the fuzziest one, corroborating some low bootstrap values in its tree.
+
+Setting Colors from Rbrewer palette Set1
+```{r}
+#brewer color palette
+RColorBrewer::brewer.pal(9, "Set1") #10 colors
+ccs <- c("CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "NOCC")
+
+#verde, marrom, laranja, roxo, vermelho, azul, amarelo, cinza
+colors_Set1 <- c("#4DAF4A", "#A65628", "#FF7F00","#984EA3", "#E41A1C", "#377EB8","#FFFF33", "#999999")
+
+ccs_cols <- as.data.frame(cbind(ccs, colors_Set1))
+```
+
+```{r}
+tree_info_df <- dplyr::left_join(cc_info, df_tree, by=c("Strain" = "label"))
+tree_info_df <- dplyr::left_join(tree_info_df, ccs_cols, by=c("CC" = "ccs"))
+head(tree_info_df)
+```
+
+```{r}
+tree_info_df %>%
+  ggplot2::ggplot(ggplot2::aes(x=CC, y=branch.length))+
+  ggplot2::geom_boxplot(fill = colors_Set1) +
+  ggplot2::theme_bw() +
+  ggplot2::labs(y = "Branch Length")
+```
+
+
+
+# Resistance Analysis - CARD 3.0.9
+
+## blast
+We conducted the resistance analysis with CARD as a database. The paper is CARD 2020: antibiotic resistome surveillance with the Comprehensive Antibiotic Resistance Database. We will BLASTP v2.8.1 to account for similarity with ppos:
+
+-sim >= 50%
+-qcov >= 60%
+-scov >= 50%
+
+Since we are working with local alignment, we also need to filter by hit/subject coverage. We could estimate this parameter using:
+
+$\frac{alignment\,length}{subject\,length}$
+
+However, the limitation is that we are introducing GAPs from the alignment length. The best aproach is to estimate hcov by:
+
+$\frac{s\_end \,- \,s\_start}{subject\,length}$
+
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+makeblastdb -dbtype prot -in info/protein_fasta_protein_homolog_model.fasta -out CARD_DB -logfile
+
+for i in ../../4.Dataset/faa_files/*.faa; do echo processing $i; STEM=$(basename $i .faa);\
+blastp -db ../database-3.0.9/CARD_DB -query $i \
+-outfmt "6 qseqid sseqid pident ppos qlen slen evalue \
+qcovs length qstart qend sstart send bitscore" -max_target_seqs 1 \
+-evalue 1.0e-05 -out $STEM\.CARD;done
+
+
+```
+
+Adding the strain name before each line:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+for i in *.CARD; do echo processing $i;STEM=$(basename $i .CARD); sed -i "s/^/$STEM\t/g" $i;done
+```
+
+Filtering
+```{bash, eval=FALSE, engine="sh"}
+cat *.CARD|awk '$7>=60'|sort -k7|awk '$11>=60'|awk '(($16 - $15)/$9) >= 0.5'|cut -f1,4,5,6,7,8,9,10,11,12,13,14,15,16,17|sed 's/|ARO/\tARO/g; s/gb|/gb_/g; s/|/\t/g' >../Resistome.txt
+```
+
+```{r}
+blast_resistance <- read.csv2(file = "R_analysis/Resistome/Resistome.txt", header = FALSE, sep = '\t')
+colnames(blast_resistance) <- c('Strain', 'ORF', 'Protein.Accession', 'ARO', 'Gene', 'Identity',
+                                'Similarity', 'qlen', 'slen', 'evalue', 'qcov',
+                                'length', 'qstart', 'qend', 'sstart', 'send', 'bitscore')
+
+aro <- read.csv2(file = "R_analysis/Resistome/card-ontology/aro.tsv", sep = '\t')
+aro_index <- read.csv2(file = "R_analysis/Resistome/card-data/aro_index.tsv", sep = '\t')
+head(blast_resistance)
+```
+
+```{r}
+Resistome <- dplyr::left_join(blast_resistance, aro, by = c("ARO" = "Accession"))
+Resistome <- dplyr::left_join(blast_resistance, aro_index, by = c("ARO" = "ARO.Accession"))
+
+Resistome$Similarity <- as.numeric(Resistome$Similarity)
+Resistome$Identity <- as.numeric(Resistome$Identity)
+
+```
+
+However, I think that blast is introducing a lot of noise with these parameters. Check the distribution of both similarity and identity:
+
+```{r}
+par(mfrow = c(1,3))
+plot(density(Resistome$Identity), main = "Identity")
+plot(density(Resistome$Similarity), main = "Similarity")
+plot(density(Resistome$qcov), main = "Query Coverage")
+par(mfrow = c(1,1))
+```
+
+We expect that the identity and similarity disbrution become left-sided; not right-sided. Having a resistance gene does not mean that the bacteria is resistant. It depends on the biology of species. We will keep coverage as 50% for both query and subject, but we will increse identity (instead of similariry) to 60%. We will run usearch_global.
+
+## usearch v11.0.667
+
+We conducted the resistance analysis with CARD as a database. The paper is CARD 2020: antibiotic resistome surveillance with the Comprehensive Antibiotic Resistance Database. We will use usearch_global to to globally align the sequences with the following criteria:
+
+-id >= 60%
+-qcov >= 50%
+-scov >= 50%
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+#db creation
+usearch11.0.667_i86linux32 -makeudb_usearch info/protein_fasta_protein_homolog_model.fasta\
+-output CARD_DB_usearch
+
+#loop 
+for i in ../../4.Dataset/faa_files/*.faa; do echo processing $i; STEM=$(basename $i .faa); usearch11.0.667_i86linux32 -usearch_global $i -db ../database-3.0.9/CARD_DB_usearch -top_hit_only -evalue 1.0e-05 -id 0.6 -query_cov 0.5 -target_cov 0.5 -userout $STEM\.CARD -userfields query+target+id+evalue+qlo+qhi+tlo+thi+ql+tl+bits; done
+
+#Adding strain name in the first column
+for i in *.CARD; do echo processing $i;STEM=$(basename $i .CARD); sed -i "s/^/$STEM\t/g" $i;done
+```
+
+```{r}
+usearch_resistance <- read.csv2(file = "R_analysis/Resistome/Resistome_usearch.txt", header = FALSE, sep = '\t')
+colnames(usearch_resistance) <- c('Strain', 'ORF', 'Protein.Accession', 'ARO', 'Gene',
+                                  'Species', 'Identity','V8','qstart', 'qend', 'sstart', 'send', 
+                                'qlen', 'slen', 'V15')
+
+aro <- read.csv2(file = "R_analysis/Resistome/card-ontology/aro.tsv", sep = '\t')
+aro_index <- read.csv2(file = "R_analysis/Resistome/card-data/aro_index.tsv", sep = '\t')
+head(usearch_resistance)
+```
+
+
+Merging information:
+
+```{r}
+Resistome <- dplyr::left_join(usearch_resistance, aro, by = c("ARO" = "Accession"))
+Resistome <- dplyr::left_join(Resistome, aro_index, by = c("ARO" = "ARO.Accession"))
+
+Resistome$Identity <- as.numeric(Resistome$Identity)
+
+head(Resistome, n=2)
+```
+
+
+```{r}
+Resistome_filt <- Resistome %>%
+  tidyr::separate(ORF, extra = 'drop', remove = TRUE, into = "ORF", sep = ' ') %>%
+  dplyr::select(c('Strain', 'ORF','ARO', 'ARO.Name', 'Identity',
+                             'Drug.Class', 'Resistance.Mechanism','AMR.Gene.Family',  
+                             'Species','Description')) 
+head(Resistome_filt)
+```
+
+How is the identity distribution?
+
+```{r}
+Resistome_filt %>%
+  ggplot2::ggplot(ggplot2::aes(x=Identity)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+Most resistance genes has an identity around 70%.
+
+
+```{r}
+#number of resistance genes
+nrow(Resistome_filt)
+```
+
+We identified **1223 resistance genes**. We defined as core-resistome those genes present in more than 95% of isolates.
+
+```{r}
+Resistome_filt <- Resistome_filt %>%
+  dplyr::group_by(ARO) %>%
+  dplyr::mutate(status = ifelse(length(ARO)/length(unique(Resistome_filt$Strain)) > 0.95,
+                         'core', 'accessory'))
+
+head(Resistome_filt, n=3)
+```
+
+Number of genes per strain
+
+```{r}
+Resistome_filt %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(occurrence = length(ARO)) %>%
+  dplyr::arrange(desc(occurrence))
+```
+
+
+## Core Resistome Analysis
+
+It is common to have duplicate copy of resistance genes in core genome and also with a low similarity. This is explained because core-resistance genes may be involved with global metabolism regulation or other general activities. We will first explore core-genes discarding duplications.
+
+
+```{r}
+core <- dplyr::filter(Resistome_filt, status == "core")
+nrow(core)
+nrow(core)/nrow(Resistome_filt)
+length(unique(core$ARO))
+```
+
+There are 1037 core-resistance genes. It corresponds to 84.79% of total resistance genes identified. We have only 15 unique resistance genes in the core.
+
+What is the average copy number of a resistance gene across the core?
+
+```{r, warning=FALSE, message=FALSE}
+unique_core <- core %>%
+  dplyr::group_by(ARO.Name, Resistance.Mechanism, Drug.Class, Description) %>%
+  dplyr::summarise(mean_id = mean(Identity),
+            mean_ocurrence = length(ARO)/length(unique(Strain))) %>%
+  dplyr::arrange(ARO.Name)
+
+```
+
+```{r}
+unique_core
+```
+
+Exporting table with information about core genome to compose the suplementary material of the paper.
+
+```{r, eval=TRUE}
+writexl::write_xlsx(unique_core, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/core_resistome.xlsx" )
+```
+
+
+Frequency of resistance mechanism
+```{r, message=FALSE}
+unique_core %>%
+  dplyr::group_by(Resistance.Mechanism) %>%
+  dplyr::summarise(abs_frequency = length(Resistance.Mechanism),
+                   rel_frequency = length(Resistance.Mechanism)/nrow(unique_core))
+  
+```
+
+TODOS os genes do core genoma são associados a bombas de efluxo.
+
+What are the most prevalent Drug classes?
+
+```{r}
+#split strings
+ant_classes <- c()
+
+for(i in strsplit(unique_core$Drug.Class, ";")){
+  ant_classes <- append(ant_classes, i) 
+}
+```
+
+
+```{r, message=FALSE}
+as.data.frame(ant_classes) %>%
+  dplyr::group_by(ant_classes) %>%
+  dplyr::mutate(count = length(ant_classes)) %>%
+  dplyr::arrange(desc(count)) %>%
+  
+  ggplot2::ggplot(ggplot2::aes(x=reorder(ant_classes, -count), 
+                               fill=reorder(ant_classes, -count))) +
+  ggplot2::geom_bar() +
+  ggplot2::theme_bw() + 
+  ggplot2::labs(x= " ", fill = "Drug Class") +
+  ggplot2::theme(axis.text.x=ggplot2::element_blank(),
+        axis.ticks.x=ggplot2::element_blank())
+  
+```
+
+It indicates that resistance against macrolides and tetracyclines is most prevalent. However, these results need to be interpreted very carefully. It does not support that P. putida is intrinsically resistant to macrolides, but it has a lot of genes involved.
+
+## Accessory Resistome
+
+We first evaluated if all strains harbor accessory genes and the total number of genes.
+
+```{r}
+Resistome_filt %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(n_genes = sum(ifelse(status == "accessory", 1, 0))) %>%
+  dplyr::arrange(desc(n_genes))
+```
+
+We did not identified accessory resistance genes in the following strains, mainly from CC1:
+
+CC1: CY06, IOFA1, IOFA19, KB3, KH-18-2, KH-20-11,and LF54 (KT-90 harbored 1 gene and DZ-F23 14 genes)
+
+CC5: JR16
+
+Distribution of accessory genes
+
+```{r}
+occurence_per_strain_res <- Resistome_filt %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(n_genes = sum(ifelse(status == "accessory", 1, 0))) %>%
+  dplyr::arrange(desc(n_genes))
+occurence_per_strain_res
+```
+
+```{r}
+plot(occurence_per_strain_res$n_genes, type = "s", xlab= "Strain", ylab = "Numer of genes")
+```
+
+
+Selecting only those strains with accessory resistance genes.
+
+```{r}
+acc <- dplyr::filter(Resistome_filt, status == "accessory")
+nrow(acc)
+nrow(acc)/nrow(Resistome_filt)
+head(acc)
+```
+
+Exporting the xlsx file to compose the supplementary material.
+
+```{r, eval=FALSE}
+writexl::write_xlsx(acc, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/accessory_resistome.xlsx")
+```
+
+How much unique genes did we find in the accessory genome?
+
+```{r}
+unique(acc$ARO.Name)
+length(unique(acc$ARO.Name))
+```
+
+
+15.20% of the total number of resistance genes compose the accessory resistome.
+
+```{r, message=FALSE}
+acc %>%
+  dplyr::group_by(ARO.Name) %>%
+  dplyr::summarise(occurrence = length(ARO)) %>%
+  dplyr::arrange(desc(occurrence))
+```
+
+What are the main mechanisms of resistance in accessory resistome 
+
+```{r}
+acc %>%
+  dplyr::group_by(Resistance.Mechanism) %>%
+  dplyr::summarise(abs_frequency = length(Resistance.Mechanism),
+                   rel_frequency = length(Resistance.Mechanism)/nrow(acc))
+```
+
+
+
+Probability distribution only for strains containing resistance genes
+
+```{r, message=FALSE}
+acc %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(occurrence = length(ARO)) %>%
+  dplyr::arrange(desc(occurrence)) %>%
+  ggplot2::ggplot(ggplot2::aes(x=occurrence)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+Creating the matrix
+
+```{r, eval=FALSE, message=FALSE}
+#Writing for excel to be edited and ploted by category
+
+acc_mat<- acc %>%
+  reshape2::dcast(acc$Strain~acc$ARO.Name, length)
+writexl::write_xlsx(acc_mat, path = "R_analysis/Resistome/accessory_genome_binary_for_iTOL.xlsx")
+```
+
+```{r, message=FALSE}
+acc_mat<- acc %>%
+  reshape2::dcast(acc$Strain~acc$ARO.Name, length)
+
+row.names(acc_mat) <- acc_mat$`acc$Strain`
+acc_mat <- acc_mat[-1]
+  
+```
+
+
+heatmap  based on presence or absence:
+
+```{r}
+#brewer color palette
+RColorBrewer::brewer.pal(9, "YlOrBr") #10 colors
+```
+
+```{r}
+acc_mat[acc_mat > 0] <- 1 #Converting the data frame to presence/absence
+heatmap(as.matrix(acc_mat), scale = "none", col=c("#FFFFE5","#FEC44F"))
+```
+
+In this heatmap, we have only 60 strains, because in 8 strains we did not detect accessory resistance genes. We exported the matrix with presence_absence information to generate the final figure with iTOL.
+
+### Accessory resistance genes in plasmids
+
+```{r}
+head(acc, n = 2)
+```
+
+```{r}
+plasmids_orfs <- read.csv2('R_analysis/Plasmids/plasmids_orf_info.txt', sep='\t', header = FALSE)
+
+colnames(plasmids_orfs) <- c("Strain","Contig", "ORF")
+head(plasmids_orfs)
+```
+
+```{r}
+resistance_in_plasmids <- dplyr::left_join(acc, plasmids_orfs, by = "ORF")
+head(resistance_in_plasmids)
+```
+
+Partial conclusions:
+
+- The strain GTC_16473 contains a lot of resistance genes. The genes ACC(6')-IIa, aadA23, and CARB-3 are located in the plasmid with high identity with NC_004772.1 (gnl|XXX|BNGAKINL_168). We also identified OXA-2, aadA22, AAC(6')-Ia, AAC(6')-IIc, AAC(3'')-Ib, APH(6)-Id, IMP-1, and sul1 in plasmid-like sequences that did not reached the threshold to be identified as a plasmid because of the fragmented sequence and lack of coverage with reference. We also did not recover the replication origin. This also indicates an underestimation of plasmids in P. putida species. The strain GTC_16482 also harbored similar resistance genes, but OXA-2, aadA22, AAC(6')-Ia, AAC(6')-IIc. Both strains belong to CC7 clonal complex, in which the reference strain KT2440 were classified.
+
+- Among plasmids that were detected harboring resistance genes, the Strain XWY-1 (CC6) had the plasmid NZ_CP026333.1 pXWY-1. This strain was isolated from rice fields in China with an environmental importance. We found sul1, aadA2, qacH genes. aadA2 is an aminoglycoside nucleotidyltransferase gene usually encoded by plasmids from ANT(3'') gene family.
+
+# Virulome analysis
+
+The virulence factor database (VFDB, http://www.mgc.ac.cn/VFs/) was used to access the presence/absence of virulence genes across Pseudomonas putida. This database was downloaded in 30th, July 2020. The databsed consisted by 28639 proteins associated with virulence in several pathogens. Although it is very detailed, it is redundant. For example, the *plc* gene is present in this database 135 times; for each species that it had been identified. I overcame this redundance problem clustering proteins based on 70% identity and then retrieving only one representative sequence per cluster previouly described in Pseudomoas genus. I used `uclust v1.2.22q`.
+
+I did this python script to retrive only sequences from Pseudomonas genus
+
+```{python, eval=FALSE, python.reticulate = FALSE}
+#python3
+
+#!/usr/local/bin/python3
+
+from Bio import SeqIO
+import sys
+
+file = sys.argv[1]
+
+with open(file, 'r') as fh:
+    for record in SeqIO.parse(fh, 'fasta'):
+        # It will recover the genus name
+        if record.description.split('[')[-1].split()[0] == 'Pseudomonas':
+            record.id = f'{record.description.split()[0]}@{record.description.split()[1]}'
+            with open("VFDB_pseudomonas.fasta", "a") as output_handle:
+                SeqIO.write(record, output_handle, "fasta")
+```
+
+The ouput generated is VFDB_pseudomonas.fasta with 2708 sequences, and it will be used as input for uclust.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+uclust --sort ../VFDB_pseudomonas.fasta --output seqs_sorted.fasta
+
+uclust --input seqs_sorted.fasta --uc results_70.uc --id 0.70
+
+#Getting only centroid sequences
+uclust --uc2fasta results_70.uc --input ../VFDB_pseudomonas.fasta --output nr_VFDB_pseudomonas.fasta --types C
+
+```
+
+We got 1097 clusters at 70.0% identity. We used the file nr_VFDB_pseudomonas.fasta to construct the database for "blastp". Parameters were the same as used for resistance.
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+usearch11.0.667_i86linux32 -makeudb_usearch ../database/uclust/nr_VFDB_pseudomonas.fasta\
+-output VFDB_DB_pseudomonas_usearch
+
+for i in ../../4.Dataset/faa_files/*.faa; do echo processing $i; STEM=$(basename $i .faa);\
+usearch11.0.667_i86linux32 -usearch_global $i -db ../database/VFDB_DB_pseudomonas_usearch -top_hit_only\
+-evalue 1.0e-05 -id 0.6 -query_cov 0.5 -target_cov 0.5 -userout $STEM\.VFDB -userfields\
+query+target+id+evalue+qlo+qhi+tlo+thi+ql+tl+bits; done
+
+#Adding strain name in the first column
+for i in *.VFDB; do echo processing $i;STEM=$(basename $i .VFDB); sed -i "s/^/$STEM\t/g" $i;done
+
+
+```
+
+Filtering process:
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+for i in *.VFDB; do echo processing $i;STEM=$(basename $i .VFDB); sed -i "s/^/$STEM\t/g" $i;done
+```
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+cat *.VFDB |awk '$5>=50'|awk '$9>=60'|awk '(($14 - $13)/$7) >= 0.5'|\
+sed 's/@/\t/g; s/[[:digit:]]\+|\*|//g; s/(gi/\tgi/g; s/(gb/\tgb/g; s/(//g; s/)//g' >../Virulome.txt
+
+```
+
+```{r}
+usearch_virulence <- read.csv2(file = "R_analysis/Virulome/Virulome_usearch.txt", header = TRUE, sep = '\t')
+
+usearch_virulence$Identity <- as.numeric(usearch_virulence$Identity)
+
+head(usearch_virulence)
+```
+
+```{r}
+usearch_virulence %>%
+  ggplot2::ggplot(ggplot2::aes(x=Identity)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+VFDB is a trick database. I inspected for all records to classify them into functions and classes.
+
+```{r}
+vir_info <- read.csv2("R_analysis/Virulome/VFDB_Pseudomonas_info.txt", header = TRUE, sep='\t')
+head(vir_info)
+```
+
+
+```{r}
+vir <- usearch_virulence %>%
+  dplyr::group_by(GENE) %>%
+  dplyr::mutate(status = ifelse(length(GENE)/length(unique(usearch_virulence$Strain)) >= 0.95,
+                         'core', 'accessory')) %>%
+  dplyr::ungroup()
+
+head(vir)
+```
+
+Combining information
+
+```{r}
+nrow(vir)
+virulome <- dplyr::left_join(vir, vir_info, by = "VF_ID")
+nrow(virulome)
+```
+
+## Core-virulome
+
+```{r}
+core_vir <- virulome %>%
+  dplyr::filter(status == "core")
+head(core_vir)
+```
+
+```{r}
+core_vir %>%
+  dplyr::group_by(GENE.x, Class, Mechanism, Key_word) %>%
+  dplyr::summarise(occurrence = length(GENE.x))
+```
+
+```{r, message=FALSE}
+core_unique <- core_vir %>%
+  dplyr::group_by(GENE.x, Class, Mechanism, Key_word) %>%
+  dplyr::summarise(Identity = max(Identity))
+head(core_unique)
+```
+
+```{r}
+writexl::write_xlsx(core_unique, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/Virulome.xlsx")
+```
+
+
+```{r}
+table(core_unique$Key_word) %>%
+  prop.table()
+```
+
+
+
+## Accessory Virulome
+
+```{r}
+acc_vir <- dplyr::filter(vir, status == "accessory")
+acc_virulome <- dplyr::left_join(acc_vir, vir_info, by = "VF_ID")
+head(acc_vir, n =2)
+
+```
+
+Writing the supplementary file
+
+```{r}
+writexl::write_xlsx(x= acc_virulome, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/acc_virulome.xlsx")
+```
+
+
+
+```{r}
+acc_vir %>%
+  dplyr::group_by(GENE) %>%
+  dplyr::summarise(occurrence = length(GENE)) %>%
+  dplyr::arrange(desc(occurrence))
+```
+
+Counting the occurence by strains:
+
+```{r, message=FALSE}
+occurence_per_strain_vir <- acc_vir %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(Virulence = length(GENE)) %>%
+  dplyr::arrange(desc(Virulence))
+
+knitr::kable(occurence_per_strain_vir)
+```
+
+
+Frequency of accessory virulence genes
+
+```{r, message=FALSE}
+acc_vir %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(occurrence = length(GENE)) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(desc(occurrence)) %>%
+  ggplot2::ggplot(ggplot2::aes(x=occurrence)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+
+Creating the matrix
+
+```{r, message=FALSE}
+acc_mat_vir<- acc_vir %>%
+  reshape2::dcast(acc_vir$Strain~acc_vir$GENE, length)
+  
+```
+
+
+```{r}
+row.names(acc_mat_vir) <- acc_mat_vir$`acc_vir$Strain`
+acc_mat_vir <- acc_mat_vir[-1]
+```
+
+```{r}
+acc_mat_vir[acc_mat_vir > 0] <- 1 #Converting the data frame to presence/absence
+heatmap(as.matrix(acc_mat_vir), scale = "none", col=c("#FFFFE5","#FEC44F"), cexRow = 0.7)
+```
+
+
+Plotting HSI-I and bau system system:
+
+```{r}
+input<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Virulome/KT2440.gbf")
+
+```
+
+
+acinetobactin_gene_cluster bau:
+
+```{r}
+bau<-input[c(1205:1220), ] #corresponding lines
+bau
+```
+
+
+Manual annotation:
+JPCJOKPO_01245 - bauA (red)
+JPCJOKPO_01246 - bauB? (green)
+JPCJOKPO_01247 - bauE (yellow)
+JPCJOKPO_01248 - bauC (purple)
+JPCJOKPO_01249 - bauD (gray)
+JPCJOKPO_01251 - PSEEN2498 (orange)
+
+
+```{r}
+bau[bau$synonym == "JPCJOKPO_01245","fill"] <- "red" 
+bau[bau$synonym == "JPCJOKPO_01246","fill"] <- "green" 
+bau[bau$synonym == "JPCJOKPO_01247","fill"] <- "yellow" 
+bau[bau$synonym == "JPCJOKPO_01248","fill"] <- "purple" 
+bau[bau$synonym == "JPCJOKPO_01249","fill"] <- "gray"
+bau[bau$synonym == "JPCJOKPO_01251","fill"] <- "orange"
+
+
+```
+
+```{r}
+genoPlotR::plot_gene_map(dna_segs = list(bau), 
+              gene_type = "arrows", 
+              main="P. putida KT2440 acinetobactin gene cluster",
+              main_pos = "centre",
+              limit_to_longest_dna_seg =TRUE,
+              seg_plot_height = 50)
+```
+
+
+HSI - We will plot from JPCJOKPO_01743	to JPCJOKPO_01776 (vgrG)
+```{r}
+hsi_locus<-input[c(1708:1741), ] #corresponding lines
+hsi_locus
+```
+
+Manual annotation:
+JPCJOKPO_01748 - hcpI (red)
+JPCJOKPO_01749 - icmF1 (green)
+JPCJOKPO_01755 - clpV1 (yellow)
+JPCJOKPO_01776 - vgrG1 (purple)
+
+```{r}
+hsi_locus[hsi_locus$synonym == "JPCJOKPO_01748","fill"] <- "red" #hcpI
+hsi_locus[hsi_locus$synonym == "JPCJOKPO_01749","fill"] <- "green" #icmF1
+hsi_locus[hsi_locus$synonym == "JPCJOKPO_01752","fill"] <- "orange" #dotU2  #pelo blast com sim baixa
+hsi_locus[hsi_locus$synonym == "JPCJOKPO_01755","fill"] <- "yellow" #clpV1
+hsi_locus[hsi_locus$synonym == "JPCJOKPO_01776","fill"] <- "purple" #vgrG1
+
+
+```
+
+
+```{r}
+genoPlotR::plot_gene_map(dna_segs = list(hsi_locus), 
+              gene_type = "arrows", 
+              main="P. putida KT2440 HSI-I locus",
+              main_pos = "centre",
+              limit_to_longest_dna_seg =TRUE,
+              seg_plot_height = 50)
+```
+
+We will analyse this loci carefully exporting predicted proteins in xlsx file.
+
+```{r, eval=FALSE}
+
+writexl::write_xlsx(hsi_locus,"R_analysis/Virulome/hsi_locus.xlsx")
+```
+
+
+
+Veja este artigo para discutir virulência. Ele fala sobre sideróforos e P. putida na rizosfera.
+
+Utilization of Heterologous Siderophores Enhances Levels of Iron Available to Pseudomonas putida in the Rhizosphere
+
+Characterization of Esterase A, a Pseudomonas stutzeri A15 Autotransporter
+
+
+# Pathogenicity
+
+We will compare the number of plasmids with resistance and virulence in accessory genome.
+
+```{r, message=FALSE}
+raxml <- treeio::read.raxml("Phylogenies/RAxML/RAxML_bipartitionsBranchLabels.pput_snps_core")
+outgroup <- c("LF54", "DZ-F23", "IOFA1", "IOFA19", "CY06", "KH-20-11","KH-18-2", "KB3", "KT-90")
+tree <- treeio::root(raxml, outgroup)
+```
+
+1 layer - Clonal Complex
+
+2 layer - Number of plasmids
+
+3 layer - Accessory Resistance Genes
+
+4 layer - Accessory Virulence Genes
+
+Dataset preparation:
+
+```{r}
+cc_info <- read.csv2("R_analysis/Strain_and_cc.txt", sep = '\t', nrows = 68)
+df_tree <- treeio::as_tibble(tree)
+
+# colors of CCs
+# RColorBrewer::brewer.pal(9, "Set1") #10 colors
+ccs <- c("CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "NOCC")
+
+# verde, marrom, laranja, roxo, vermelho, azul, amarelo, cinza
+colors_Set1 <- c("#4DAF4A", "#A65628", "#FF7F00","#984EA3", "#E41A1C", "#377EB8","#FFFF33", "#999999")
+
+ccs_cols <- as.data.frame(cbind(ccs, colors_Set1))
+
+# Merging
+tree_info_df <- dplyr::left_join(cc_info, df_tree, by=c("Strain" = "label"))
+tree_info_df <- dplyr::left_join(tree_info_df, ccs_cols, by=c("CC" = "ccs"))
+```
+
+```{r}
+row.names(tree_info_df) <- tree_info_df$Strain
+head(tree_info_df)
+```
+
+
+```{r}
+circ <- ggtree::ggtree(tree, branch.length="none", layout = "circular") +
+  ggtree::geom_rootedge(rootedge = 1) #0.7 is the length of root edge.
+circ
+```
+
+```{r}
+df_with_CC <- dplyr::select(tree_info_df, "CC")
+rownames(df_with_CC) <- tree_info_df$Strain
+head(df_with_CC)
+```
+
+
+
+```{r, message=FALSE}
+#layer1 - Clonal Complex
+lay_1 <- ggtree::gheatmap(circ, df_with_CC, offset=-0.5, width=.1,
+               colnames_angle=90, colnames_offset_y = .25) +
+  ggplot2::scale_fill_manual(values = c("#4DAF4A", "#A65628", "#FF7F00",
+                                "#984EA3", "#E41A1C", "#377EB8",
+                                "#FFFF33", "#999999"))
+
+lay_1
+
+```
+
+Layer of Resistance and Virulence genes
+```{r}
+#getting resistance genes
+res_vir <- dplyr::left_join(tree_info_df, occurence_per_strain_res, by = "Strain") %>%
+  as.data.frame()
+
+#getting virulence genes
+res_vir <- dplyr::left_join(res_vir, occurence_per_strain_vir, by = "Strain") %>%
+  as.data.frame()
+
+#getting number of plasmids
+res_vir <- dplyr::left_join(res_vir, plasmids_occurrence, by = "Strain") %>%
+  as.data.frame()
+
+row.names(res_vir) <- res_vir$Strain
+res_vir[is.na(res_vir)] <- 0
+#colnames(res_vir) <- c("Resistance", "Virulence")
+head(res_vir) # x = resistance and y = virulence
+
+
+```
+
+```{r}
+res_vir <- res_vir %>%
+  
+  # plasmids layer
+  dplyr::mutate(Plas_status = ifelse(Plasmids == 0, "a_0",
+                                    ifelse(Plasmids == 1, "b_1",
+                                           ifelse(Plasmids == 2, "c_2","d_2<x<5")))) %>%
+  
+  # resistance layer
+  dplyr::mutate(Res_status = ifelse(n_genes <= 2, "e_<2",
+                                    ifelse(n_genes <= 5, "f_<5",
+                                           ifelse(n_genes <= 10, "g_<10","h_>10")))) %>%
+  # virulence layer
+  dplyr::mutate(Vir_status = ifelse(Virulence <= 15, "i_<15",
+                                    ifelse(Virulence <= 20, "j_<20",
+                                           ifelse(Virulence <= 25, "l_<25","m_>25")))) %>%
+  
+  dplyr::select(c("Strain", "Plas_status", "Res_status", "Vir_status"))
+
+row.names(res_vir) <- res_vir$Strain
+#res_vir$Res_status <- factor(res_vir$Res_status, levels=c("a_<2", "b_<5", "c_<10", "d_>10"))
+#res_vir$Vir_status <- factor(res_vir$Vir_status, levels=c("e_<15", "f_<20", "g_<25", "h_>25"))
+res_vir <- res_vir[-1]
+head(res_vir)
+  
+```
+
+Elaborating layer 2 with resistance.
+
+```{r}
+RColorBrewer::brewer.pal(12, "Set3") #Get the gray for low frequency "#D9D9D9"
+RColorBrewer::brewer.pal(9, "YlOrRd") #10 colors
+```
+
+With plasmids
+
+
+```{r, message=FALSE}
+lay_2 <- lay_1 + ggnewscale::new_scale_fill()
+
+ggtree::gheatmap(lay_2, res_vir, offset=1.1, width=0.3,
+                 colnames_angle=90, colnames_offset_y = .25) +
+  ggplot2::scale_fill_manual(values = c("#D9D9D9", "#FED976", "#FD8D3C", "#BD0026",
+                                        "#D9D9D9", "#FED976", "#FD8D3C", "#BD0026",
+                                        "#D9D9D9", "#FED976", "#FD8D3C", "#BD0026")) #You need to change order
+```
+
+Without plasmids
+
+```{r, message=FALSE}
+res_vir_no_plas <- res_vir[-1]
+
+lay_2 <- lay_1 + ggnewscale::new_scale_fill()
+
+ggtree::gheatmap(lay_2, res_vir_no_plas, offset=1.1, width=0.3,
+                 colnames_angle=90, colnames_offset_y = .25) +
+  ggplot2::scale_fill_manual(values = c("#D9D9D9", "#FED976", "#FD8D3C", "#BD0026",
+                                        "#D9D9D9", "#FED976", "#FD8D3C", "#BD0026")) #You need to change order
+```
+
+# Plant Growth Properties
+
+According descriptions in Pseudomonas genus, we retrieved main genes (61 sequences) associated with plant growth promotion.
+
+-id >= 60% 
+-qcov >= 50%
+-scov >= 50%
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+#db creation
+usearch11.0.667_i86linux32 -makeudb_usearch database.txt -output PGPG_DB
+
+#loop 
+for i in ../../4.Dataset/faa_files/*.faa; do echo processing $i; STEM=$(basename $i .faa); usearch11.0.667_i86linux32 -usearch_global $i -db ../db/PGPG_DB -top_hit_only -evalue 1.0e-05 -id 0.6 -query_cov 0.5 -target_cov 0.5 -userout $STEM\.PGPG -userfields query+target+id+evalue+qlo+qhi+tlo+thi+ql+tl+bits; done
+
+#Adding strain name in the first column
+for i in *.PGPG; do echo processing $i;STEM=$(basename $i .PGPG); sed -i "s/^/$STEM\t/g" $i;done
+
+```
+
+
+```{r}
+pgpg_usearch <- read.csv2(file = "R_analysis/Biotec_interest/PGPGome.txt", sep = "\t", header = FALSE)
+colnames(pgpg_usearch) <- c('Strain', 'ORF', 'Gene','Identity','V8','qstart', 'qend', 'sstart', 'send', 
+                                'qlen', 'slen', 'V15')
+pgpg_usearch$Identity <- as.numeric(pgpg_usearch$Identity)
+head(pgpg_usearch)
+```
+
+
+```{r}
+pgpg <- pgpg_usearch %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::mutate(status = ifelse(length(Gene)/length(unique(pgpg_usearch$Strain)) >= 0.95,
+                         'core', 'accessory')) %>%
+  dplyr::ungroup()
+
+head(pgpg)
+```
+
+```{r}
+pgpg %>%
+  ggplot2::ggplot(ggplot2::aes(x=Identity)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+
+```{r}
+nrow(pgpg)
+```
+We had 1484 hits with plant-growth promoting genes.
+
+## Core
+
+
+```{r}
+core <- dplyr::filter(pgpg, status == "core")
+```
+
+```{r}
+sort(unique(core$Gene))
+```
+
+```{r, message=FALSE}
+core %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(occurrence = length(Gene)) %>%
+  dplyr::arrange(desc(occurrence))
+```
+
+
+## Accessory 
+
+
+```{r}
+acc_pgpg <- dplyr::filter(pgpg, status == "accessory")
+head(acc_pgpg, n =2)
+
+```
+
+```{r, eval=FALSE}
+writexl::write_xlsx(acc_pgpg, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/Accesosry_pgpg.xlsx")
+
+writexl::write_xlsx(core, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/core_pgpg.xlsx")
+
+```
+
+Creating the matrix and correlating with population structure
+
+```{r, message=FALSE}
+raxml <- treeio::read.raxml("Phylogenies/RAxML/RAxML_bipartitionsBranchLabels.pput_snps_core")
+outgroup <- c("LF54", "DZ-F23", "IOFA1", "IOFA19", "CY06", "KH-20-11","KH-18-2", "KB3", "KT-90")
+tree <- treeio::root(raxml, outgroup)
+```
+
+```{r, message=FALSE}
+acc_mat_pgpg<- acc_pgpg %>%
+  reshape2::dcast(acc_pgpg$Strain~acc_pgpg$Gene, length)
+
+rownames(acc_mat_pgpg) <- acc_mat_pgpg$`acc_pgpg$Strain`
+acc_mat_pgpg <- acc_mat_pgpg[-1]
+  
+```
+
+
+```{r}
+t <- ggtree::ggtree(tree) + ggtree::geom_tiplab(size=3, align = TRUE)
+ggtree::gheatmap(t, acc_mat_pgpg, offset = 0.1)
+```
+
+
+```{r}
+acc_mat_pgpg[acc_mat_pgpg > 0] <- 1 #Converting the data frame to presence/absence
+heatmap(as.matrix(acc_mat_pgpg), scale = "none", col=c("#FFFFE5","#FEC44F"), cexRow = 0.7)
+```
+
+
+# Biorremediation
+
+According descriptions in Pseudomonas genus, we retrieved main genes (218 sequences) associated with plant growth promotion.
+
+-id >= 60% 
+-qcov >= 50%
+-scov >= 50%
+
+```{bash, eval=FALSE, engine="sh"}
+#bash
+
+#db creation
+usearch11.0.667_i86linux32 -makeudb_usearch bioremediation.txt -output BIORREMEDIATION_DB
+
+#loop 
+for i in ../../4.Dataset/faa_files/*.faa; do echo processing $i; STEM=$(basename $i .faa); usearch11.0.667_i86linux32 -usearch_global $i -db ../db/BIORREMEDIATION_DB -top_hit_only -evalue 1.0e-05 -id 0.6 -query_cov 0.5 -target_cov 0.5 -userout $STEM\.BIOR -userfields query+target+id+evalue+qlo+qhi+tlo+thi+ql+tl+bits; done
+
+#Adding strain name in the first column
+for i in *.BIOR; do echo processing $i;STEM=$(basename $i .BIOR); sed -i "s/^/$STEM\t/g" $i;done
+```
+
+```{r}
+bior_usearch <- read.csv2(file = "R_analysis/Biotec_interest/BiorOme.txt", sep = "\t", header = FALSE)
+colnames(bior_usearch) <- c('Strain', 'ORF', 'Gene','Identity','V8','qstart', 'qend', 'sstart', 'send', 
+                                'qlen', 'slen', 'V15')
+bior_usearch$Identity <- as.numeric(bior_usearch$Identity)
+
+```
+
+```{r}
+bior_usearch$Gene <- gsub('PP_', 'PP', bior_usearch$Gene)
+bior_usearch$Gene <- gsub('A_I', 'A-I', bior_usearch$Gene)
+bior_usearch$Gene <- gsub('P_I', 'P-I', bior_usearch$Gene)
+bior_usearch$Gene <- gsub('czcR_Q88RU0', 'czcR_Q88RV0', bior_usearch$Gene)
+	
+
+#Spliting gene name and Uniprot ID
+bior_usearch <- tidyr::separate(bior_usearch, Gene, extra = 'drop', remove = TRUE, into = c("Gene","Uniprot_ID"), sep = '_')
+
+bior_usearch <-  tidyr::separate(bior_usearch, ORF, extra = 'drop', remove = TRUE, into = "ORF", sep = ' ')
+  
+
+head(bior_usearch)
+```
+
+Reading information about biorremediation database
+```{r}
+info_bior <- read.csv2("R_analysis/Biotec_interest/biorremediation_info.txt", sep ="\t")
+head(info_bior)
+```
+
+
+```{r}
+bior <- dplyr::left_join(bior_usearch, info_bior, by = "Uniprot_ID") %>%
+  dplyr::select(Strain, ORF, Gene.x, Uniprot_ID, Identity, Category)
+
+head(bior)
+```
+
+
+```{r}
+bior %>%
+  ggplot2::ggplot(ggplot2::aes(x=Identity)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+
+Creating the status collum for core or accessory
+
+```{r}
+bior <- bior %>%
+  dplyr::group_by(Gene.x) %>%
+  dplyr::mutate(status = ifelse(length(Gene.x)/length(unique(bior$Strain)) >= 0.95,
+                         'core', 'accessory')) %>%
+  dplyr::ungroup()
+
+head(bior)
+```
+
+## Core
+
+```{r}
+core_bior <- dplyr::filter(bior, status == "core")
+nrow(core_bior)
+```
+
+Most part of genes associated with biorremediation is classified in the core genome. 58 different genes compose the core genome.
+
+```{r}
+length(unique(core_bior$Gene.x))
+```
+
+```{r}
+sort(unique(core_bior$Gene.x))
+```
+
+Preparing file with unique information about genes present in core genome to submit as a supplementary material.
+
+```{r, message=FALSE}
+unique_bior <- core_bior %>%
+  dplyr::group_by(Gene.x, Uniprot_ID, Category) %>%
+  dplyr::summarise(mean_id = mean(Identity),
+            mean_ocurrence = length(Gene.x)/length(unique(Strain))) %>%
+  dplyr::arrange(Gene.x)
+```
+
+Writing excel file
+
+```{r}
+writexl::write_xlsx(unique_bior, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/core_biorremediation.xlsx")
+```
+
+
+## Accessory
+
+```{r}
+acc_bior <- dplyr::filter(bior, status == "accessory")
+```
+
+```{r}
+length(unique(acc_bior$Gene.x))
+```
+
+```{r, eval=FALSE}
+writexl::write_xlsx(acc_bior, path = "../../Meus_artigos/Pseudomonas putida/Suplementary_files/accessory_biorremediation.xlsx")
+```
+
+```{r, message=FALSE}
+occurence_per_strain_bior <- acc_bior %>%
+  dplyr::group_by(Strain) %>%
+  dplyr::summarise(Bior = length(Gene.x)) %>%
+  dplyr::arrange(desc(Bior))
+
+occurence_per_strain_bior
+```
+
+Creating the matrix
+
+```{r, message=FALSE}
+acc_mat_bior<- acc_bior %>%
+  reshape2::dcast(acc_bior$Strain~acc_bior$Gene.x, length)
+  
+```
+
+
+```{r}
+row.names(acc_mat_bior) <- acc_mat_bior$`acc_bior$Strain`
+acc_mat_bior <- acc_mat_bior[-1]
+```
+
+```{r}
+acc_mat_bior[acc_mat_bior > 0] <- 1 #Converting the data frame to presence/absence
+heatmap(as.matrix(acc_mat_bior), scale = "none", col=c("#FFFFE5","#FEC44F"), cexRow = 0.7, cexCol = 0.5)
+```
+
+Retion with phylogenetic tree
+
+```{r}
+t <- ggtree::ggtree(tree) + ggtree::geom_tiplab(size=3, align = TRUE)
+ggtree::gheatmap(t, acc_mat_bior, offset = 0.1)
+```
+
+
+Matrix with category of resistance genes.
+
+Creating the matrix
+
+```{r, message=FALSE}
+acc_mat_bior<- acc_bior %>%
+  reshape2::dcast(acc_bior$Strain~acc_bior$Category, length)
+  
+```
+
+
+```{r}
+row.names(acc_mat_bior) <- acc_mat_bior$`acc_bior$Strain`
+acc_mat_bior <- acc_mat_bior[-1]
+```
+
+```{r}
+t <- ggtree::ggtree(tree) + ggtree::geom_tiplab(size=3, align = TRUE)
+ggtree::gheatmap(t, acc_mat_bior, offset = 0.1)
+```
+
+
+```{r}
+acc_mat_bior[acc_mat_bior > 0] <- 1 #Converting the data frame to presence/absence
+heatmap(as.matrix(acc_mat_bior), scale = "none", col=c("#FFFFE5","#FEC44F"), cexRow = 0.7)
+```
+
+There are some genes that were predicted as resistance genes and genes for biorremediation.
+
+```{r}
+#core
+Correspondece <- dplyr::inner_join(core, core_bior, by = "ORF")
+head(Correspondece, n=3)
+```
+
+This result indicate that MexAB-OprM is the same as ttgABC.
+
+```{r}
+#accessory
+Correspondece_acc <- dplyr::inner_join(acc, acc_bior, by = "ORF")
+head(Correspondece_acc, n=3)
+```
+
+Investigating the locus possibilly transferred through HGT with genes for aromatic compounds degradatation in the six strains: F1, UV4, UV4_95, NBRC_111125, YKD221, and DOT-T1E.
+
+- F1:
+
+```{r}
+input_F1<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/F1.gbf.txt")
+```
+
+We got lines from integrase to cymR.
+
+```{r}
+locus_F1 <-input_F1[c(2851:2894), ] #corresponding lines
+locus_F1
+```
+
+Genome length of locus
+```{r}
+3300081	 - 3251431	
+```
+
+It is approximatelly 48.6 Kb long.
+
+- DOT-T1E
+
+```{r}
+input_DOT_T1E<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/DOT-T1E.gbf")
+```
+
+intA - 4267
+cymR - 4222
+
+```{r}
+locus_DOT_T1E <-input_DOT_T1E[c(4222:4267), ] #corresponding lines
+locus_DOT_T1E
+```
+
+- NBRC_111125:
+
+```{r}
+input_NBRC_111125<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/NBRC_111125_locus.txt")
+```
+
+We got lines from intA to cymR. This locus is in the reverse order.
+
+intA - line 49 
+cymR- line 5
+
+```{r}
+locus_NBRC_111125 <-input_NBRC_111125[c(5:49), ] #corresponding lines
+locus_NBRC_111125
+```
+
+- UV4
+
+
+```{r}
+input_UV4<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/UV4_locus.txt")
+```
+
+intA - 95
+cymR - 138
+
+```{r}
+locus_UV4 <-input_UV4[c(95:138), ] #corresponding lines
+locus_UV4
+```
+
+
+- UV4_95
+
+```{r}
+input_UV4_95<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/UV4_95_locus.txt")
+```
+
+intA - 25
+cymR - 68
+
+```{r}
+locus_UV4_95 <-input_UV4_95[c(25:68), ] #corresponding lines
+locus_UV4_95
+```
+
+
+- YKD221
+
+```{r}
+input_YKD221<-genoPlotR::read_dna_seg_from_genbank("R_analysis/Biotec_interest/YKD221_locus.txt")
+```
+
+intA - 227
+cymR - 184
+
+```{r}
+locus_YKD221 <-input_YKD221[c(184:227), ] #corresponding lines
+locus_YKD221
+```
+
+
+Plotting
+```{r}
+genoPlotR::plot_gene_map(dna_segs = list(locus_F1, locus_DOT_T1E, locus_NBRC_111125, locus_UV4, locus_UV4_95, locus_YKD221), 
+              gene_type = "arrows", 
+              main="F1, DOT-T1E, NBRC_111125, UV4, UV5_95, YKD221",
+              main_pos = "centre",
+              limit_to_longest_dna_seg =TRUE,
+              seg_plot_height = 50)
+```
+
+
+
+```{r}
+data <- readRDS("../../../Desktop/dado_str.RDS")
+head(data)
+```
+
+
+```{r}
+data_changed <- data %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(max=max(final_gik1,final_gik2,final_gik3),
+                match=which.max(c(final_gik1,final_gik2,final_gik3))) %>%
+  dplyr::arrange(match, desc(max)) %>%
+  dplyr::ungroup()
+
+data_changed
+```
+
+```{r}
+pdf("../../../Desktop/GOM_q_sorted.pdf", height = 4, width = 12)
+data_changed %>%
+  dplyr::mutate(num=seq_len(nrow(.))) %>%
+  dplyr::select(num,dplyr::contains("final_gik")) %>%
+  reshape2::melt(id.vars = "num") %>%
+  purrr::map_df(rev) %>%
+  
+  ggplot2::ggplot(ggplot2::aes(x=num, y=value, fill=variable))+
+  ggplot2::geom_bar(stat = "identity", position = "fill", width = 1)+
+  ggplot2::scale_fill_manual(values = c("#4daf4a","#984ea3","#ff7f00"))+
+  ggplot2::labs(x=NULL, y=NULL)+
+  ggplot2::scale_x_continuous(expand = c(0,0))+
+  ggplot2::scale_y_continuous(expand = c(0,0))+
+  ggplot2::theme_grey(base_size = 7)
+
+dev.off()
+```
+
+
+# Citrobacter appendix
+
+```{r}
+dists <- readxl::read_excel("~/Documents/Harvard/works/Citrobacter/data/Pairwise_comparisons.xlsx")
+head(dists)
+```
+
+```{r}
+hSites <- read.csv("~/Documents/Harvard/works/Citrobacter/data/Sites_predictiveness.csv")
+hSites
+```
+
+```{r}
+alleles <- readxl::read_excel("~/Documents/Harvard/works/Citrobacter/data/All_snps_summary_long_clean.xlsx")
+alleles
+```
+
+```{r}
+#Assign query sites: sites with Zsnps or at least 6 hSNPs
+#Remove the noisy sites
+Good_sites <- c(2438536,3996563,1285412,2835878,793586,1039375,1229417,17805,1749372,1896011,4987380,492511,2372393,175076,2194913,4623423,645840,3040456,2584041,1417667,123360,890802,937620,2172181,408983,3638848,1531388,2169284,5081862,1086564,4298690,1415559,4854857,1032727,1265896,3928225)
+#Sites deemed to be noise
+Noisy <- c(123360,175076,408983,645840,890802,1086564,1417667,2169284,2172181,2194913,2584041,3040456,4623423,5081862)
+#Sites with fixed SNPs
+Zsnps <- c(2372393 , 492511 , 1896011 , 4987380 , 17805 , 1749372 , 1229417 , 1039375 , 793586 , 1285412 , 2835878 , 3996563 , 2438536)
+
+#Store variable H SNP sites to a vector
+hSNPs <- Good_sites[!Good_sites %in% Zsnps]
+
+#Store variable H SNP sites to a vector without noisy sites
+cleanhSNPS <- hSNPs[!hSNPs %in% Noisy]
+
+Variant_sites <- hSites %>% filter(!Pos %in% Noisy) %>% filter(frequency < 200, frequency != 0) %>% pull(Pos)
+Variants_not_rare <- hSites %>% filter(!Pos %in% Noisy) %>% filter(frequency > 2, frequency < 200) %>% pull(Pos)
+
+```
+
+```{r}
+chain_colors = c("#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c","#fdbf6f","#ff7f00","#cab2d6","#6a3d9a","#b15928")
+
+eleven_colors= c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c","#fdbf6f","#ff7f00","#cab2d6","#6a3d9a","#b15928")
+```
+
+
+
+```{r}
+fig2e <- alleles %>% 
+    filter(Pos %in% Variants_not_rare,!ID == "ICC180") %>%
+    ggplot(aes(x=Mouse_No*7, y= Allele_Ratio, 
+               fill = as.factor(Pos),
+               color = Chain)) + 
+    geom_line(alpha =0.7) + 
+    geom_point(alpha = 0.7) + 
+    scale_color_manual(values = chain_colors) +
+    theme_bw() +
+    facet_wrap(~ Chain, ncol = 5) + xlab("Time (days)") + 
+    ylab("Allelic frequency") + 
+    theme(legend.position = "none", 
+          panel.grid.major = element_blank())
+fig2e
+```
+
+```{r}
+trans_dists <- dists %>% filter(transmission_steps == 1)
+for (i in 1:nrow(trans_dists)) {
+  ID1 <- trans_dists$ID1[i]
+  ID2 <- trans_dists$ID2[i]
+  new_sites <- 0
+  
+  for (qpos in Variant_sites ) {
+    q1 <- which(alleles$Pos == qpos & alleles$ID == ID1 )
+    q2 <- which(alleles$Pos == qpos & alleles$ID == ID2 )
+    
+    if(alleles$Allele_Ratio[q1] <= 0.025 & alleles$Allele_Ratio[q2] > 0.025 ){
+      new_sites <- new_sites + 1
+    }
+  }
+  trans_dists$New_variants[i] <- new_sites
+} 
+```
+
+```{r}
+fig2c<- trans_dists  %>% 
+    ggplot(aes(x = SNP_distance)) + 
+    geom_histogram(bins = 3,
+                   fill="lightgrey",
+                   aes(y=..ncount../sum(..ncount..)),
+                   alpha= 0.8) + 
+  geom_density(bw = 0.5,color = "blue",alpha= 1 )+
+    ylim(0,1) +
+    theme_bw()+
+  xlab("# of SNPs per transmission") + 
+    ylab("Relative frequency") +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+fig2c
+```
+
+```{r}
+fig2b <- trans_dists %>% ggplot(aes(x = New_variants)) + 
+  geom_histogram(bins = 4, aes(y=..ncount../sum(..ncount..)),
+                 fill = "lightgrey",
+                 alpha= 0.8) + 
+  geom_density(bw = 0.7,color = "blue",alpha= 0.4 ) + 
+    ylim(0,1) +
+    xlab("# of new variants arising") +
+    ylab("Relative frequency") +
+        theme_bw()+
+    theme(legend.position = "none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+fig2b
+```
+
+
+```{r}
+fig2d <- dists %>% 
+    ggplot(aes(x = SNP_distance)) + 
+  geom_histogram(bins = 7, aes(y=..ncount../sum(..ncount..)),
+                 fill = "lightgrey",alpha= 1) + 
+    geom_density(bw = 0.7,color = "blue",alpha= 0.4 ) + ylim(0,1) +
+    theme_bw()+
+  xlab("# of SNPs difference") + 
+      ylab("Relative frequency") +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+fig2d
+```
+
+```{r}
+raxml <- treeio::read.raxml("~/Documents/Harvard/works/Citrobacter/data/RAxML_bipartitionsBranchLabels.Crod_snp")
+raxml <- treeio::as.phylo(raxml)
+
+meta_info <- data.frame(label=raxml$tip.label) %>%
+  dplyr::mutate(chain=substring(label,1,2))
+
+tree <- treeio::full_join(raxml, meta_info, by="label")
+```
+
+```{r}
+fig2a = ggtree::ggtree(tree,size=0.3) +
+  ggtree::geom_rootedge(0.004,size=0.3)+
+  ggtree::geom_tippoint(ggplot2::aes(color=chain),alpha=0.7) +
+  ggplot2::scale_color_manual(values=eleven_colors)+
+    ggtree::geom_treescale()
+fig2a
+```
+
+
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/figure2_raw.pdf",height = 7, width = 7)
+library(patchwork)
+(fig2a+(fig2b/fig2c/fig2d))/fig2e
+dev.off()
+```
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/figure2_raw.pdf",height = 7, width = 7)
+bcd = cowplot::plot_grid(fig2b,fig2c,fig2d, labels = c('B', 'C', 'D'), 
+                label_size = 12, ncol = 1)
+
+upper_plot = cowplot::plot_grid(fig2a, bcd, labels = c("A", ''))
+
+cowplot::plot_grid(upper_plot, fig2e,labels = c("", 'E'),ncol=1)
+dev.off()
+```
+
+# Figure 3
+
+```{r}
+dists$transmission <- dists$transmission_steps == 1
+dists$cluster <- dists$transmission_steps < 6
+
+### Mean per site change
+means <- vector(mode="numeric", length=0)
+for (i in 1:40){
+  tmp <- dists %>% filter(transmission_steps == i) %>% pull(Mean_allelic_ratio_change)
+  
+  average <- mean(tmp)
+  means <- c(means, average)
+}
+```
+
+
+```{r}
+dists %>% filter(transmission_steps < 21) %>% ggplot (aes(Mean_allelic_ratio_change, fill = (transmission_steps == 1))) + 
+  geom_density(bw = 0.15 , alpha = 0.5) + xlab("Mean change in allelic frequency") + ylab("Density") + labs(fill = "Transmission") + 
+  theme_bw()
+```
+
+```{r}
+fig3a= dists %>% 
+    filter(transmission_steps < 21) %>% 
+    ggplot() + 
+    geom_density(bw = 0.1 , 
+                 alpha = 0.5, 
+                 aes(x=Mean_allelic_ratio_change,
+                     y=..density..,
+                     group = transmission_steps, 
+                     color = transmission_steps)) +
+  xlab("Mean change in allelic frequency") + ylab("Density") + labs(color = "Steps") + 
+  theme_bw() + scale_color_gradient2(low="navy",mid = "yellow",high="red", midpoint = 10)+
+    theme(panel.grid.major = element_blank(),
+          legend.position = c(0.80, 0.75))+
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+fig3a
+
+```
+
+
+```{r}
+fig3b=ggplot() +
+    geom_point(aes(x = 1:40, y = means),fill="black", color="black", alpha=0.5) +
+  xlab("# of transmission steps") + ylab("Mean per site AR change") + 
+    theme_bw() +
+    theme(panel.grid.major = element_blank())+
+    geom_smooth(aes(x = 1:40, y = means),
+              method = "lm", 
+              formula = "y~x")+
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.01))
+fig3b
+```
+
+```{r}
+cor.test(x=1:40, means)
+```
+
+```{r}
+model_steps = lm(formula = AR_chage~steps,data=data.frame(steps= 1:40, AR_chage = means))
+```
+
+```{r}
+summary(model_steps)
+```
+
+```{r}
+round(coef(model_steps),2)
+```
+
+```{r}
+fig3c=dists %>% ggplot(aes(y = transmission, 
+                           x = Mean_allelic_ratio_change , 
+                           fill = transmission)) + 
+    geom_violin(size=0.1) + 
+    geom_boxplot(size=0.2,width=.06, color="black", fill="white", alpha=0.5)+
+  xlab ("Mean allelic ratio change") + 
+    ylab("Transmission Pair") + 
+    theme_bw()+
+    theme(legend.position="none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_y_discrete(labels = c("false", "true"))+
+    ggplot2::scale_fill_brewer(palette = "Set2")
+fig3c
+```
+
+```{r}
+fig3d <- ggplot(dists, aes(y = transmission, x = Total_allelic_ratio_change,fill = transmission)) + 
+    geom_violin(size=0.1) + 
+    geom_boxplot(size=0.2,width=.06, color="black", fill="white", alpha=0.5)+
+  xlab ("Total allelic ratio change") + ylab("Transmission Pair") + theme_bw()+
+    theme(legend.position="none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_y_discrete(labels = c("false", "true"))+
+    ggplot2::scale_fill_brewer(palette = "Set2")
+fig3d
+```
+
+
+```{r}
+fig3e <- ggplot(dists,aes(x = P_trans_ARmean, y = transmission ,fill = transmission)) +   
+    geom_violin(size=0.1) + 
+    geom_boxplot(size=0.2,width=.06, color="black", fill="white", alpha=0.5)+
+    xlab ("Likelihood of transmission") + ylab("Transmission Pair") + theme_bw()+
+    theme(legend.position="none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_y_discrete(labels = c("false", "true"))+
+    ggplot2::scale_fill_brewer(palette = "Set2")
+fig3e
+```
+
+
+```{r}
+dists %<>%
+    dplyr::mutate(transmission_binary = ifelse(transmission==TRUE, 1,0))
+
+roc.list <- pROC::roc(transmission_binary ~ Mean_allelic_ratio_change + Total_allelic_ratio_change + P_trans_ARmean, data = dists)
+```
+```{r}
+#Confidence intervals
+ci.list <- lapply(roc.list, pROC::ci.se, specificities = seq(0, 1, l = 25))
+
+dat.ci.list <- lapply(ci.list, function(ciobj) 
+  data.frame(x = as.numeric(rownames(ciobj)),
+             lower = ciobj[, 1],
+             upper = ciobj[, 3]))
+```
+
+```{r}
+library(pROC)
+p <- ggroc(roc.list) + 
+    theme_bw() + 
+    geom_abline(slope=1, intercept = 1, linetype = "dashed", color = "grey") + 
+    coord_equal()+
+    scale_color_manual(values=c("#1f78b4", "#33a02c", "#e31a1c"))+
+    theme(panel.grid.minor = element_blank(),
+          legend.position = c(0.60, 0.25))
+    
+    
+
+for(i in 1:3) {
+  p <- p + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = x, ymin = lower, ymax = upper),
+    fill = i + 1,
+    alpha = 0.2,
+    inherit.aes = F) 
+  } 
+
+fig3f=p
+fig3f
+```
+
+```{r}
+print(round(pROC::auc(dists$transmission_binary,
+                dists$Mean_allelic_ratio_change,
+                levels = c(0, 1), 
+                direction = ">"),2))
+
+print(round(pROC::auc(dists$transmission_binary,
+                dists$Total_allelic_ratio_change,
+                levels = c(0, 1), 
+                direction = ">"),2))
+
+print(round(pROC::auc(dists$transmission_binary,
+                dists$P_trans_ARmean,
+                levels = c(0, 1), 
+                direction = "<"),2))
+```
+
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/Newfigure3_raw.pdf",height = 5, width = 8)
+cowplot::plot_grid(fig3a, fig3b,fig3f, 
+                   fig3c,fig3d,fig3e,
+                   labels = LETTERS[1:6],
+                   ncol=3,
+                   byrow = TRUE)
+dev.off()
+```
+## Getting the ROC curve with noisy sites
+
+
+```{r}
+noisy = read.csv("../../Harvard/works/Citrobacter/data/Distances_transmission_likelihood_noisy_sites_included.csv", header = T) %>%
+    dplyr::mutate(transmission_binary = ifelse(transmission==TRUE, 1,0))
+
+dists$transmission <- dists$transmission_steps == 1
+
+```
+
+```{r}
+roc.list.noisy <- pROC::roc(transmission_binary ~ Mean_allelic_ratio_change + Total_allelic_ratio_change + P_trans_ARmean, data = noisy)
+```
+
+
+# Figure S2
+
+```{r}
+## Figure 4  Bottleneck estimates from allelic ratio change
+
+trans_dists <- dists %>% filter(transmission_steps == 1)
+
+BBEstimates <- read.csv("../../Harvard/works/Citrobacter/data/BB_Estimates.csv")
+
+BBEstimates <- merge(trans_dists,BBEstimates, by=c("ID1","ID2"))
+```
+
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/figureS2.pdf", height = 4, width = 5)
+BBEstimates %>% 
+    filter(Estimate != "Inf") %>% 
+    ggplot(aes(x = Mean_allelic_ratio_change, y = Estimate)) + 
+    geom_point(aes(color = as.numeric(Interaval_size))) + 
+    scale_y_continuous(trans = 'log2') + 
+    scale_color_distiller(palette = "Spectral", name = "Confidence \nInterval") +
+    xlab("Mean change in allelic ratio") + 
+    ylab ("Bottleneck Estimate") +
+    theme_bw()+
+    theme(panel.grid.major = element_blank())
+dev.off()
+```
+
+```{r}
+BBEstimates$Estimate %>% table() %>% sort()
+```
+
+# Figure S1
+Time to variant emergence
+
+```{r}
+Accumulations_timing <- alleles %>% filter(Allele_Ratio > 0.9) %>% dplyr::select(Pos,Chain) %>% unique() %>% filter(Pos %in% Zsnps)
+
+for (i in 1:nrow(Accumulations_timing)){
+  query_chain <- alleles %>% filter(Pos == Accumulations_timing$Pos[i],Chain == Accumulations_timing$Chain[i])
+  query_start <- query_chain %>% filter(Allele_Ratio > 0.025) 
+  Accumulations_timing$Start[i] <- query_start$Mouse_No[1]
+  
+  query_fix <- query_chain %>% filter(Allele_Ratio > 0.9) 
+  Accumulations_timing$Fix[i] <- query_fix$Mouse_No[1]
+}
+
+Accumulations_timing$Interval <- Accumulations_timing$Fix - Accumulations_timing$Start
+```
+
+
+```{r}
+figs1a <- ggplot(Accumulations_timing, aes(x = Start*7)) + 
+    geom_histogram(bins = 11, fill = "#1f78b4") + 
+    #geom_density(bw = 0.7,color = "blue", aes(y=..density..)) +
+    xlab("Time since index (days)") + 
+    ylab("Frequency of emergence") + 
+    theme_bw()+
+    theme(panel.grid.major = element_blank())
+figs1a
+
+```
+
+```{r}
+figs1b <- ggplot(Accumulations_timing) + geom_point(aes(x = Start*7, y = Interval*7), 
+                                          color = "#1f78b4") +
+  xlab("Time since index (days)") + ylab("Time to fixation (days)") + theme_bw()+
+    theme(panel.grid.major = element_blank())
+figs1b
+```
+
+```{r}
+#pdf and tiff
+pdf("../../Harvard/works/Citrobacter/data/imgs/figureS1.pdf", height = 4, width = 8)
+cowplot::plot_grid(figs1a, figs1b, ncol=2, labels = LETTERS[1:2])
+dev.off()
+```
+
+
+# Transmission Likelihoods
+
+```{r}
+dists %<>%
+    dplyr::select(ID1, ID2, SNP_distance,P_trans_ARmean, dplyr::everything()) %>%
+    dplyr::arrange(desc(P_trans_ARmean))
+dists
+```
+
+```{r}
+dists %>%
+    ggplot2::ggplot(ggplot2::aes(x=P_trans_ARmean)) +
+    ggplot2::geom_density() +
+    theme_light()
+```
+
+```{r}
+dists %>%
+    ggplot2::ggplot(ggplot2::aes(y=P_trans_ARmean, x=Same_chain)) +
+    ggplot2::geom_boxplot()
+```
+
+We will consider only cases when Mouse1 < Mouse2 (-> idea of a chain) and those belonging to the same chain.
+
+```{r}
+chains = dists %>%
+    dplyr::filter(Mouse1 == Mouse2 - 1 & (Same_chain=="Yes" | (ID1 == "ICC180" | ID2 =="ICC180"))) %>%
+    dplyr::arrange(ID1) %>%
+    dplyr::mutate(lik_range = ifelse(
+        dplyr::between(P_trans_ARmean,0,0.03), "0.00-0.03",
+        ifelse(dplyr::between(P_trans_ARmean,0.03,0.06),"0.03-0.06", ">0.06")))
+chains
+```
+
+```{r}
+chain_numbers = data.frame(chain_number = c(0, 1:10), 
+                           Chain=c("ICC180", 
+                                   paste0("N",1:5),
+                                   paste0("W",1:5))) 
+```
+
+
+```{r}
+meta_chain = dplyr::bind_rows(
+    dplyr::select(chains, ID1, Chain1, Mouse1) %>% 
+      `colnames<-`(c("ID", "Chain","Mouse")),
+    dplyr::select(chains, ID2, Chain2, Mouse2) %>%
+      `colnames<-`(c("ID", "Chain","Mouse"))) %>%
+  dplyr::distinct(ID, .keep_all = TRUE) %>%
+    dplyr::left_join(.,chain_numbers, by="Chain")
+meta_chain
+```
+
+
+```{r}
+graph = igraph::graph_from_data_frame(d = dplyr::select(chains, ID1, ID2, P_trans_ARmean,
+                                                        SNP_distance, 
+                                                        time_interval, 
+                                                        P_trans_time,
+                                                        lik_range),
+                                      directed = TRUE, 
+                                      vertices = meta_chain)
+summary(graph)
+```
+We will plot it as a radar plot. Therefore, we need to provide a layout matrix in clock-wise sense. The formula employed will be:
+
+$$x= mouse \times \cos (2\pi\frac{chain}{\max(chain)})\\y= mouse \times \sin (2\pi\frac{chain}{\max(chain)})$$
+
+```{r}
+max_chain_n = 10
+clock_layout <- meta_chain %>%
+    dplyr::mutate(x=Mouse*cos(2*pi*(chain_number/max_chain_n)),
+                  y=Mouse*sin(2*pi*(chain_number/max_chain_n))) %>%
+    dplyr::select(x,y) %>%
+    as.matrix()
+```
+
+```{r}
+set.seed(2022)
+graph %>%
+    ggnetwork::ggnetwork(layout=clock_layout) %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    #ggnetwork::geom_edges(color="#525252",
+    #                      arrow = arrow(length = ggnetwork::unit(4, "pt"), type = "closed"),
+    #                      alpha=0.7)+
+    ggnetwork::geom_nodes(size=5, alpha=0.5,
+                        data=function(x) { x[ x$name =="ICC180",]})+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain))+
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+```
+
+```{r}
+set.seed(2022)
+graph %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend,color=P_trans_ARmean)) +
+    ggnetwork::geom_edges(arrow = arrow(length = ggnetwork::unit(3, "pt"), type = "closed"))+
+    ggnetwork::geom_nodes(size=5, alpha=0.5,
+                        data=function(x) { x[ x$name =="ICC180",]})+
+    ggnetwork::geom_nodes()+
+scale_color_gradient2(low="yellow",mid = "orange", high="red", midpoint = 0.03)+    ggnetwork::theme_blank()
+```
+
+```{r}
+set.seed(2022)
+pdf(file="../../Harvard/works/Citrobacter/data/imgs/transmission_network_lik.pdf", height = 5)
+graph %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend,color=SNP_distance)) +
+    ggnetwork::geom_edges(arrow = arrow(length = ggnetwork::unit(3, "pt"), type = "closed"))+
+    ggnetwork::geom_nodes(size=5, alpha=0.5,
+                        data=function(x) { x[ x$name =="ICC180",]})+
+    ggnetwork::geom_nodes()+
+scale_color_gradient2(low="yellow",mid = "orange", high="red", midpoint = 0.5)+  
+    ggplot2::labs(color="L(Trans)")+
+    ggnetwork::theme_blank()
+dev.off()
+```
+
+
+```{r}
+set.seed(2022)
+fig4a = graph %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    ggnetwork::geom_edges(color="#525252",
+                          arrow = arrow(length = ggnetwork::unit(4, "pt"), type = "closed"),
+                          alpha=0.7)+
+    ggnetwork::geom_nodes(size=5, alpha=0.8,
+                        data=function(x) { x[ x$name =="ICC180",]}, 
+                        color="lightgrey")+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain))+
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+fig4a
+```
+
+```{r}
+#let different chains mix.
+dists %>% 
+    dplyr::filter(Mouse1 == Mouse2 - 1 & ((ID1 == "ICC180" | ID2 =="ICC180")))
+```
+
+
+```{r}
+pdf(file="../../Harvard/works/Citrobacter/data/imgs/transmission_network.pdf", height = 4)
+set.seed(2022)
+graph %>%
+    ggnetwork::ggnetwork(layout=igraph::layout_nicely(.)) %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    ggnetwork::geom_edges(color="lightgrey",
+                          arrow = arrow(length = ggnetwork::unit(3, "pt"), type = "closed"))+
+    ggnetwork::geom_nodes(size=5, alpha=0.5,
+                        data=function(x) { x[ x$name =="ICC180",]})+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain),size=3)+
+    ggnetwork::geom_nodelabel(ggplot2::aes(label = Mouse),
+                                    label.size=NA,
+                                    fill=NA, size=2)+
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+dev.off()
+```
+
+
+```{r}
+pdf(file="../../Harvard/works/Citrobacter/data/imgs/nodes.pdf", height = 5)
+set.seed(2022)
+graph %>%
+    ggnetwork::ggnetwork(layout=igraph::layout_nicely(.)) %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    ggnetwork::geom_nodes(size=5, alpha=0.5,
+                        data=function(x) { x[ x$name =="ICC180",]})+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain))+
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+dev.off()
+
+pdf(file="../../Harvard/works/Citrobacter/data/imgs/edges.pdf", height = 5)
+set.seed(2022)
+graph %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend,color=P_trans_ARmean)) +
+    ggnetwork::geom_edges(arrow = arrow(length = ggnetwork::unit(3, "pt"), type = "closed"))+
+scale_color_gradient2(low="yellow",mid = "orange", high="red", midpoint = 0.03)+    ggnetwork::theme_blank() + labs(color="teste")
+dev.off()
+```
+
+Working with the raw graph and just considering the likelihood
+
+```{r}
+# meta info
+meta_chain = dplyr::bind_rows(
+    dplyr::select(dists, ID1, Chain1, Mouse1) %>% 
+      `colnames<-`(c("ID", "Chain","Mouse")),
+    dplyr::select(dists, ID2, Chain2, Mouse2) %>%
+      `colnames<-`(c("ID", "Chain","Mouse"))) %>%
+  dplyr::distinct(ID, .keep_all = TRUE) %>%
+    dplyr::left_join(.,chain_numbers, by="Chain")
+
+#graph
+raw_graph = igraph::graph_from_data_frame(d = dplyr::select(dists, ID1, ID2, P_trans_ARmean,
+                                                        SNP_distance, 
+                                                        time_interval, 
+                                                        P_trans_time),
+                                      directed = TRUE, 
+                                      vertices = meta_chain)
+summary(raw_graph)
+```
+
+
+```{r}
+raw_graph %>%
+    igraph::delete.edges(., which(igraph::E(.)$P_trans_ARmean < 0.06)) %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    ggnetwork::geom_edges(color="#525252",
+                          arrow = arrow(length = ggnetwork::unit(4, "pt"), type = "closed"),
+                          alpha=0.7)+
+    ggnetwork::geom_nodes(size=5, alpha=0.8,
+                        data=function(x) { x[ x$name =="ICC180",]}, 
+                        color="lightgrey")+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain))+
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+```
+
+Pairwise approach:
+Compare two individuals and check the highest probability.
+
+```{r}
+fig4b = dists %>%
+    #condition 1 = mouse 1 < mouse 2
+    dplyr::filter(Mouse1 < Mouse2) %>%
+    dplyr::arrange(P_trans_ARmean) %>%
+    ggplot2::ggplot(ggplot2::aes(x=P_trans_ARmean, color=Same_chain,y=..scaled..))+
+    ggplot2::geom_density(bw=0.01) +
+    ggplot2::theme_bw() +
+    ggplot2::scale_x_continuous(limits=c(-0.04,0.1))+
+    ggplot2::scale_color_brewer(palette = "Set1")+
+    ggplot2::labs(x="Transmission Likelihood", y="Density")+
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(),
+                   legend.position = "none")
+fig4b
+```
+
+In the graph above, we know that Mouse2 is always greater than Mouse 1. It makes sense, because we are approaching mouse number to time since infection.
+
+```{r}
+dists %>%
+    #condition 1 = mouse 1 < mouse 2
+    dplyr::filter(Mouse1 < Mouse2)
+```
+
+
+Let's consider transmissions of t-3, regardless our knowlegde of the chain.
+
+```{r}
+fig4c <- dists %>%
+    #condition 1 = mouse 1 < mouse 2
+    dplyr::filter(Mouse1 < Mouse2) %>%
+    #allowing maximum of t-3 %>%
+    dplyr::mutate(mouse_diff = Mouse2-Mouse1) %>%
+    dplyr::filter(mouse_diff %in% c(1,2,3)) %>%
+    ggplot2::ggplot(ggplot2::aes(x=P_trans_ARmean, color=Same_chain,y=..scaled..))+
+    ggplot2::geom_density(bw=0.01) +
+    ggplot2::scale_x_continuous(limits=c(-0.04,0.1))+
+    ggplot2::scale_color_brewer(palette = "Set1")+
+    ggplot2::theme_bw() +
+    ggplot2::labs(x="Transmission Likelihood", y="Density")+
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(),
+                   legend.position = "none")
+fig4c
+```
+
+Let's see the distribution skewness across t
+```{r}
+# starting with t=3
+dists %>%
+    #condition 1 = mouse 1 < mouse 2
+    dplyr::filter(Mouse1 < Mouse2) %>%
+    #allowing maximum of t-3 %>%
+    dplyr::mutate(mouse_diff = Mouse2-Mouse1) %>%
+    dplyr::filter(mouse_diff %in% c(1,2,3)) %>%
+    dplyr::group_by(Same_chain) %>%
+    dplyr::summarise(skewness = moments::skewness(P_trans_ARmean))
+```
+
+Creating a loop to get the skewness for each t.
+
+```{r}
+# data.frame with Acc1, Acc2, sketch_mean, and identity columns.
+
+get_skewness <- function(data, max_t_difference=22){
+  
+    df_temp = list()
+    
+    for(t in seq(max_t_difference)){
+      df_temp[[t]] =   data %>%
+          #condition 1 = mouse 1 < mouse 2
+          dplyr::filter(Mouse1 < Mouse2) %>%
+          #allowing maximum of t-max_t_difference
+          dplyr::mutate(mouse_diff = Mouse2-Mouse1) %>%
+          dplyr::filter(mouse_diff %in% seq(t)) %>%
+          dplyr::group_by(Same_chain) %>%
+          dplyr::summarise(skewness = moments::skewness(P_trans_ARmean), t=t)
+    }
+  
+  big.data = do.call(rbind, df_temp)
+  rownames(big.data) = NULL
+  return(big.data)
+}
+```
+
+```{r}
+skewness_dist = get_skewness(dists, max_t_difference = 22)
+skewness_dist
+```
+
+```{r}
+fig4d <- skewness_dist %>%
+    ggplot2::ggplot(ggplot2::aes(x=t, y=skewness, color=Same_chain))+
+    ggplot2::geom_point(size=1)+
+    ggplot2::geom_line(linetype="dashed")+
+    ggplot2::theme_bw()+
+    ggplot2::scale_color_brewer(palette = "Set1")+
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(),
+                   legend.position = "none")+
+    ggplot2::labs(x="Max time", y="Distribution skewness")
+fig4d
+```
+
+Negative skewness means means a left skewed distribution. Therefore, this graph shows us that the lower the time difference, the lower the skewness, and the higher the "confidence" to use the likelihood to infer transmission. Another key feature is that regardless the time difference chosen, the skewness for different chains is always positive, meaning that the likelihood of transmission is lower (right skewed distributions). The skewness for different chains only approachs positive values if we consider more than 11 mouses in terms of time.
+
+
+
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/figure4_raw.pdf", height = 2.5)
+cowplot::plot_grid(fig4b, fig4c, fig4d, ncol = 3, labels = LETTERS[2:5])
+dev.off()
+```
+
+
+```{r}
+cowplot::plot_grid(fig4a,fig4bottom, ncol=1)
+```
+
+```{r}
+
+```
+
+
+## Madikey
+
+```{r}
+Metadata <- alleles %>% dplyr::select("ID","Chain","Mouse_No") %>% unique()
+
+### A function that takes a isolates, 
+##### 1) ranks comparisons from isolates within 3 prior steps
+##### 2) Takes the highest likelihood
+##### 3) Breaks ties by time
+##### 4) Suggests a likeliest transmission pair
+
+for (i in 1:nrow(Metadata)){
+  qID <- Metadata$ID[i]
+  qM <- Metadata$Mouse_No[i]
+  qMl <- qM - 3 # 3 days*7
+  
+  ###Only consider transmissions that are within potential donors within 4 steps
+  ###### i.e. for mouse number 8, only isolates from mouses 5-8 will be considered
+  tmp <- dists %>% filter(ID1 == qID | ID2 == qID, Mouse1 <= qM , Mouse2 <= qM, Mouse1 >= qMl, Mouse2 >= qMl, Mouse1 != Mouse2)
+  
+  ### Rank all comparisons based on transmission likelihood
+  tmp$rank <- rank(-tmp$P_trans_ARmean, ties.method = "min")
+  
+  ## Identify number of top hits
+  ntops <- length(which(tmp$rank == 1))
+  
+  if(ntops == 1){
+    qmatch <- which(tmp$rank == 1)
+    
+    if(tmp$ID1[qmatch] == qID){
+      Metadata$Donor[i] <- tmp$ID2[qmatch]
+    }else{Metadata$Donor[i] <- tmp$ID1[qmatch]}
+  }
+  else{Metadata$Donor[i] <- "multiple"}
+  
+}
+```
+
+```{r}
+Network_table <- Metadata %>% dplyr::select("Donor","ID") %>% 
+    dplyr::filter(Donor != "multiple") %>%
+    tidyr::extract(col=Donor,into = "Mouse1", regex = "(\\d$)", remove = F) %>%
+    tidyr::extract(col=ID,into = "Mouse2", regex = "(\\d$)", remove = F) #%>%
+    #dplyr::filter(Mouse2 > Mouse1)
+    
+Net_meta <- Metadata %>% filter(ID %in% c(Network_table$Donor,Network_table$ID))
+```
+
+
+```{r}
+mad_graph = igraph::graph_from_data_frame(d = dplyr::select(Network_table, Donor, ID),
+                                      directed = TRUE, 
+                                      vertices = Net_meta)
+summary(mad_graph)
+```
+
+
+```{r}
+
+pdf("../../Harvard/works/Citrobacter/data/imgs/net_3days_mad.pdf", height = 4)
+set.seed(22)
+mad_graph %>%
+    ggnetwork::ggnetwork() %>%
+    ggplot2::ggplot(ggplot2::aes(x=x, y=y, xend=xend, yend=yend)) +
+    ggnetwork::geom_edges(color="lightgrey",
+                          arrow = arrow(length = ggnetwork::unit(4, "pt"), 
+                                        type = "closed"))+
+    ggnetwork::geom_nodes(size=5, alpha=0.8,
+                        data=function(x) { x[ x$name =="ICC180",]}, 
+                        color="lightgrey")+
+    ggnetwork::geom_nodes(ggplot2::aes(color=Chain), size=3)+
+    ggnetwork::geom_nodelabel(ggplot2::aes(label = Mouse_No),
+                                    label.size=NA,
+                                    fill=NA, size=2) +
+    ggplot2::scale_color_manual(values=eleven_colors)+
+    ggnetwork::theme_blank()
+dev.off()
+```
+
+
+
+
+# Figure S3
+```{r}
+cleanhZ_lambdas <- c(1.120419,1.030973,0.8787879,0.7719298,0.6477987,0.5244957,0.4381721,0.3979328,0.2992874,0.248307,0.2063158,0.1728155,0.1407678,0.1299145,0.1100324,0.1013825,0.08944282,0.08472222,0.07795699,0.06976744)
+```
+
+```{r}
+figs3b <- ggplot() + 
+  geom_smooth(aes(x = 1:20, y = cleanhZ_lambdas),
+              se = TRUE , 
+              formula= y~x, method = "loess") +
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.01))+
+  geom_point(aes(x = 1:20, y = cleanhZ_lambdas),pch=20, col="blue") +
+  xlab("# of transmission steps") + ylab("Mean shared variants (lambda)") + 
+    theme_bw()+
+    theme(panel.grid.minor = element_blank())
+figs3b
+```
+
+```{r}
+figs3a <- dists %>% filter(transmission_steps < 21) %>% ggplot (aes(Shared_variants)) + 
+  geom_density(bw = 0.8 , alpha = 0.5, aes(group = transmission_steps, color = transmission_steps)) +
+  xlab("# of shared variants") + ylab("Frequency") + labs(color = "Steps") + 
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.01))+
+  theme_bw() + scale_color_gradient2(low="navy", mid = "yellow", high="red", midpoint = 10) +
+    theme(panel.grid.minor = element_blank(),
+          legend.position = c(0.80, 0.75))
+figs3a
+```
+
+```{r}
+figs3c <- hSites %>% ggplot(aes(x = frequency/2.05, y = transmission_predictiveness,color = Designation)) + 
+  scale_color_brewer(type = "qual", guide = "legend", palette = "Dark2") + 
+  ylab("P(Transmission|Shared)") + xlab("") +
+  geom_point() + 
+    theme_bw()+
+    theme(legend.position = c(0.70, 0.75),
+          panel.grid.major = element_blank())
+figs3c
+```
+
+```{r}
+figs3d <- hSites %>% ggplot(aes(x = frequency/2.05, y = Cluster_predictiveness, color = Designation)) + 
+  ylab("P(Cluster|Shared)") + xlab("Prevalence (%)") +
+  scale_color_brewer(type = "qual", guide = "legend", palette = "Dark2") + 
+  geom_point() + theme_bw()+
+    theme(legend.position = c(0.70, 0.75),
+          panel.grid.major = element_blank())
+figs3d
+```
+
+```{r}
+figs3e <- hSites %>% 
+    ggplot(aes(x = frequency/2.05, y = Same_Chain_predictiveness, color = Designation, )) + 
+  ylab("P(Same chain|Shared)") + xlab("") +
+  scale_color_brewer(type = "qual", guide = "legend", palette = "Dark2") + 
+  geom_point() + 
+    theme_bw()+
+    theme(legend.position = c(0.70, 0.75),
+          panel.grid.major = element_blank())
+figs3e
+```
+
+```{r}
+figs3bottom <- cowplot::plot_grid(figs3c,figs3d,figs3e, ncol = 3, labels = LETTERS[3:5])
+figs3bottom
+```
+
+```{r}
+pdf("../../Harvard/works/Citrobacter/data/imgs/Figures3_raw.pdf",height = 6)
+cowplot::plot_grid(cowplot::plot_grid(figs3a,figs3b,labels = LETTERS[1:2]),
+                   figs3bottom, ncol=1)
+dev.off()
+```
+
+
+
+
+
+
+
+
+
